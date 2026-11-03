@@ -1,0 +1,519 @@
+/* Canopy dashboard. Draws only with the public site's tokens (docs/post/site.css :root) so it
+   reads as part of shadenet.xyz: understory ground, lichen type, leaf for data, pulse for the one
+   thing that needs the eye. The two status hues are the Get access page's --ok / --no. */
+:root {
+  --ok: #82c89b;
+  --no: #f08a63;
+  --panel: rgba(10, 20, 14, 0.56);
+  --hair: rgba(147, 164, 134, 0.12);
+}
+
+.dash {
+  width: var(--page);
+  margin: 0 auto;
+  padding: clamp(1.5rem, 4vw, 3rem) 0 3rem;
+}
+
+.dash code {
+  font-family: var(--mono);
+  font-size: 0.86em;
+  color: var(--leaf);
+}
+
+/* ---- header ---------------------------------------------------------------------------- */
+
+.dash-head {
+  display: grid;
+  grid-template-columns: minmax(16rem, 0.9fr) minmax(24rem, 1.3fr);
+  gap: 1.25rem clamp(1.5rem, 4vw, 4rem);
+  align-items: end;
+  padding-bottom: 1.75rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.dash-title h1 {
+  margin: 0;
+  font-family: var(--serif);
+  font-size: clamp(2.75rem, 5vw, 4.6rem);
+  font-weight: 400;
+  letter-spacing: -0.06em;
+  line-height: 0.9;
+}
+
+.dash-title h1 span { color: var(--pulse); }
+
+.dash-title p {
+  max-width: 30rem;
+  margin: 1.1rem 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.dash-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+}
+
+.summary-cell {
+  padding: 0.85rem 1rem 0.95rem;
+  border-right: 1px solid var(--hair);
+  border-bottom: 1px solid var(--hair);
+}
+
+.summary-cell:nth-child(3n) { border-right: 0; }
+.summary-cell:nth-child(n + 4) { border-bottom: 0; }
+
+.summary-cell dt {
+  color: rgba(227, 233, 221, 0.6);
+  font-size: 0.74rem;
+}
+
+.summary-cell dd {
+  margin: 0.3rem 0 0;
+  color: var(--lichen);
+  font-family: var(--serif);
+  font-size: 1.75rem;
+  font-variant-numeric: tabular-nums;
+  line-height: 1;
+}
+
+.summary-cell dd small {
+  color: var(--muted);
+  font-family: var(--sans);
+  font-size: 0.8rem;
+}
+
+.summary-cell dd.is-warn { color: var(--pulse); }
+.summary-cell dd.is-bad { color: var(--no); }
+
+.dash-state {
+  display: flex;
+  grid-column: 1 / -1;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.75rem;
+  align-items: center;
+  margin: 0;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.75rem;
+}
+
+.dash-state strong {
+  color: var(--lichen);
+  font-weight: 500;
+}
+
+.state-dot,
+.dot {
+  display: inline-block;
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 50%;
+  background: var(--moss);
+}
+
+.state-dot.is-ok,
+.dot.is-ok { background: var(--ok); box-shadow: 0 0 9px rgba(130, 200, 155, 0.5); }
+.state-dot.is-warn,
+.dot.is-warn { background: var(--pulse); box-shadow: 0 0 9px rgba(226, 190, 103, 0.5); }
+.state-dot.is-bad,
+.dot.is-bad { background: var(--no); box-shadow: 0 0 9px rgba(240, 138, 99, 0.5); }
+
+/* ---- sections ------------------------------------------------------------------------ */
+
+.dash-section { padding-top: 2.25rem; }
+
+.section-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1.5rem;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 0.9rem;
+}
+
+.section-head h2 {
+  margin: 0;
+  font-family: var(--display);
+  font-size: 1.45rem;
+  font-weight: 400;
+  letter-spacing: -0.03em;
+}
+
+.section-head p {
+  max-width: 38rem;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+/* ---- Elder cards ----------------------------------------------------------------------- */
+
+.elder-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 21rem), 1fr));
+  gap: 0.75rem;
+}
+
+.elder-card {
+  padding: 0.95rem 1rem 0.6rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+}
+
+.elder-card.is-bad { border-color: rgba(240, 138, 99, 0.42); }
+.elder-card.is-warn { border-color: rgba(226, 190, 103, 0.42); }
+
+.elder-top {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 0.65rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.elder-name {
+  display: inline-flex;
+  gap: 0.55rem;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 0.86rem;
+  color: var(--lichen);
+}
+
+.elder-name small {
+  color: var(--muted);
+  font-size: 0.72rem;
+}
+
+.elder-verdict {
+  font-family: var(--mono);
+  font-size: 0.72rem;
+  color: var(--ok);
+}
+
+.elder-card.is-bad .elder-verdict { color: var(--no); }
+.elder-card.is-warn .elder-verdict { color: var(--pulse); }
+
+.elder-card dl { margin: 0; }
+
+.elder-card dl div {
+  display: grid;
+  grid-template-columns: 0.8fr 1.2fr;
+  gap: 0.8rem;
+  padding: 0.42rem 0;
+  border-bottom: 1px solid var(--hair);
+}
+
+.elder-card dl div:last-child { border-bottom: 0; }
+
+.elder-card dt {
+  color: rgba(227, 233, 221, 0.6);
+  font-size: 0.74rem;
+}
+
+.elder-card dd {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+  color: var(--leaf);
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  text-align: right;
+}
+
+.elder-card dd.is-bad { color: var(--no); }
+.elder-card dd.is-warn { color: var(--pulse); }
+
+/* ---- trend --------------------------------------------------------------------------- */
+
+.trend-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 1.25rem;
+  padding: 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+}
+
+.trend-label {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  color: rgba(227, 233, 221, 0.6);
+  font-size: 0.74rem;
+}
+
+.trend-label strong {
+  color: var(--pulse);
+  font-family: var(--serif);
+  font-size: 1.35rem;
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
+.spark {
+  display: block;
+  width: 100%;
+  height: 6rem;
+  margin-top: 0.5rem;
+  border-bottom: 1px solid var(--line);
+}
+
+.spark-area { fill: rgba(226, 190, 103, 0.08); }
+
+.spark-grid {
+  fill: none;
+  stroke: rgba(147, 164, 134, 0.16);
+  stroke-dasharray: 2 4;
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 0.4rem;
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.68rem;
+}
+
+/* Under two samples there is no line to draw: show a dashed baseline instead of an empty box. */
+.spark.is-collecting {
+  border-bottom: 1px dashed var(--line-strong);
+}
+
+.spark-line {
+  fill: none;
+  stroke: var(--pulse);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+
+.trend-strips {
+  display: grid;
+  gap: 0.75rem;
+  align-content: start;
+}
+
+.strip-row span {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: rgba(227, 233, 221, 0.6);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+.strip {
+  display: flex;
+  height: 0.85rem;
+  gap: 1px;
+  overflow: hidden;
+}
+
+.strip i {
+  flex: 1 1 0;
+  min-width: 2px;
+  max-width: 0.5rem;
+  background: var(--moss);
+  border-radius: 1px;
+}
+
+.strip i.is-ok { background: rgba(130, 200, 155, 0.75); }
+.strip i.is-bad { background: rgba(240, 138, 99, 0.85); }
+.strip i.is-warn { background: rgba(226, 190, 103, 0.8); }
+
+/* ---- node table ------------------------------------------------------------------------ */
+
+/* A shadow on the right edge says "more columns" while the table is scrolled short of its end; the
+   local-attached cover hides it once the end is reached (scroll shadows, no script). */
+.table-scroll {
+  overflow-x: auto;
+  background:
+    linear-gradient(to left, #09120d 1.5rem, rgba(9, 18, 13, 0)) right / 3rem 100% no-repeat local,
+    linear-gradient(to left, rgba(2, 6, 4, 0.85), rgba(2, 6, 4, 0)) right / 1.5rem 100% no-repeat scroll,
+    #09120d;
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+}
+
+.node-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.78rem;
+}
+
+.node-table th,
+.node-table td {
+  padding: 0.6rem 0.9rem;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.node-table thead th {
+  color: rgba(227, 233, 221, 0.6);
+  font-size: 0.72rem;
+  font-weight: 500;
+  border-bottom: 1px solid var(--line);
+}
+
+.node-table tbody tr + tr td { border-top: 1px solid var(--hair); }
+
+.node-table td {
+  color: var(--leaf);
+  font-family: var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.node-table td.onion { color: var(--lichen); }
+
+/* The node column stays put while the rest scrolls sideways on a narrow screen. */
+.node-table th:first-child,
+.node-table td.onion {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  background: #09120d;
+  box-shadow: 1px 0 0 var(--hair);
+}
+.node-table td .is-ok { color: var(--ok); }
+.node-table td .is-bad { color: var(--no); }
+.node-table td .is-warn { color: var(--pulse); }
+.node-table td .quiet { color: var(--muted); }
+
+.node-table .health {
+  display: inline-flex;
+  gap: 0.45rem;
+  align-items: center;
+}
+
+.listed {
+  display: inline-flex;
+  gap: 0.2rem;
+}
+
+.listed i {
+  width: 0.55rem;
+  height: 0.55rem;
+  border: 1px solid var(--line-strong);
+  border-radius: 1px;
+}
+
+.listed i.on {
+  background: var(--leaf);
+  border-color: var(--leaf);
+}
+
+.node-table td.empty {
+  padding: 1.5rem;
+  color: var(--muted);
+  font-family: var(--sans);
+  text-align: center;
+  white-space: normal;
+}
+
+/* ---- mix ------------------------------------------------------------------------------- */
+
+.mix-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.mix-panel {
+  padding: 0.95rem 1rem;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 0.45rem;
+}
+
+.mix-panel h3 {
+  margin: 0 0 0.75rem;
+  color: rgba(227, 233, 221, 0.6);
+  font-size: 0.74rem;
+  font-weight: 500;
+}
+
+.bars {
+  display: grid;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bars li {
+  display: grid;
+  grid-template-columns: 6.5rem minmax(0, 1fr) 2rem;
+  gap: 0.6rem;
+  align-items: center;
+  font-family: var(--mono);
+  font-size: 0.74rem;
+  color: var(--leaf);
+}
+
+.bars li b {
+  height: 0.4rem;
+  background: var(--moss);
+  border-radius: 1px;
+}
+
+.bars li b > i {
+  display: block;
+  height: 100%;
+  background: var(--leaf);
+  border-radius: 1px;
+}
+
+.bars li.is-folded { color: var(--muted); }
+.bars li.is-folded b > i { background: var(--moss); }
+.bars li em { font-style: normal; text-align: right; }
+.bars .empty { display: block; color: var(--muted); font-family: var(--sans); }
+
+.dash-foot {
+  display: flex;
+  margin-bottom: 0;
+  flex-wrap: wrap;
+  gap: 0.5rem 1.5rem;
+  justify-content: space-between;
+  margin-top: 3rem;
+  padding-top: 1.1rem;
+  border-top: 1px solid var(--line);
+  color: var(--muted);
+  font-family: var(--mono);
+  font-size: 0.72rem;
+}
+
+/* ---- responsive ------------------------------------------------------------------------ */
+
+@media (max-width: 900px) {
+  .dash-head { grid-template-columns: 1fr; }
+  .trend-panel { grid-template-columns: 1fr; }
+  .mix-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 520px) {
+  .node-table th,
+  .node-table td { padding: 0.55rem 0.7rem; }
+  .dash-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .summary-cell:nth-child(3n) { border-right: 1px solid var(--hair); }
+  .summary-cell:nth-child(2n) { border-right: 0; }
+  .summary-cell:nth-child(n + 4) { border-bottom: 1px solid var(--hair); }
+  .summary-cell:nth-child(n + 5) { border-bottom: 0; }
+  .summary-cell dd { font-size: 1.45rem; }
+  .dash-title h1 { font-size: clamp(2.4rem, 11vw, 3rem); }
+  .elder-card dl div { grid-template-columns: 0.9fr 1.1fr; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .state-dot, .dot { box-shadow: none; }
+}

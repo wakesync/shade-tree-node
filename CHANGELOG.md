@@ -4,6 +4,21 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### Canopy dashboard: every Elder Tree and every node, verified per Elder
+
+- New operator view `web/dashboard-server.mjs` (docs: `web/DASHBOARD.md`). It reads every Elder in
+  `network/<name>/deployment.json` over Tor and verifies each directory under that Elder's own
+  pinned Canopy signer and the 300 s freshness window. A tampered, cross-signed, stale or
+  future-dated directory shows as unverified and adds no rows. The signed incident feed and
+  relay aggregate are verified the same way.
+- Shows per-Elder reachability, directory age, round trip, and running commit against
+  `services.elder.commit`, plus per-node health, draining, Elder coverage, protocol and admission,
+  an in-memory trend, and an optional SOCKS dial time per node (`SHADE_TREE_DASH_PROBE_NODES=1`).
+  A down second Elder was invisible to the status page, the hosted probe and the public Grove.
+- Same privacy line as the status page: 16-character onions, no operator addresses, no region on
+  any node row (regions are k = 2 folded aggregates), no incident host labels. Loopback only, no
+  new dependency.
+
 ### RPC: a rate-limited endpoint is waited on, not failed (roadmap #369 M0)
 
 - HTTP 429, and 503 with `Retry-After`, are resent with bounded exponential backoff and jitter

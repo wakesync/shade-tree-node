@@ -8,6 +8,10 @@ It is a *cache viewer*, not a trust root: the signature check is the real
 [`packages/node/lib/directory.mjs`](../packages/node/lib/directory.mjs) `verifyDirectory` path, so a lying bootnode shows up
 as `signerOk: false`, not as a forged fleet.
 
+For a network with more than one Elder Tree, use the [canopy dashboard](DASHBOARD.md)
+(`web/dashboard-server.mjs`). It reads every Elder in the network record, verifies each one under
+its own pin, and shows per-Elder reachability, per-node health and draining, and a trend.
+
 ## Run it
 
 Point it at a bootnode and pin the directory signer (the pubkey the bootnode prints on boot).

@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex">
+  <meta name="description" content="Operator view of every ShadeNet Elder Tree and the nodes it lists, verified against each Elder's pinned Canopy signer.">
+  <meta name="theme-color" content="#07100c">
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/site.css">
+  <link rel="stylesheet" href="/dashboard.css">
+  <script type="module" src="/dashboard.js"></script>
+  <title>Canopy Dashboard · ShadeNet</title>
+</head>
+<body class="dash-page">
+  <a class="skip-link" href="#dash-main">Skip to dashboard</a>
+
+  <nav class="site-nav" aria-label="Primary navigation">
+    <a class="wordmark" href="https://shadenet.xyz/" aria-label="ShadeNet home">
+      <span class="tree-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      <span>ShadeNet</span>
+    </a>
+    <div class="nav-links">
+      <a href="/" aria-current="page">Dashboard</a>
+      <a href="https://shadenet.xyz/canopy/">Public stats</a>
+      <a href="https://github.com/dmarzzz/shade-tree-node/blob/main/web/DASHBOARD.md">Docs</a>
+    </div>
+  </nav>
+
+  <main id="dash-main" class="dash">
+    <header class="dash-head">
+      <div class="dash-title">
+        <h1>Canopy<br><span>Dashboard</span></h1>
+        <p>Every Elder Tree in <code data-network>the network record</code>, read over Tor and verified against its own pinned Canopy signer. A directory that fails verification is shown as unverified and lists no nodes. Operator view, loopback only.</p>
+      </div>
+      <dl class="dash-summary" aria-label="Canopy summary">
+        <div class="summary-cell summary-lead"><dt>Elders verified</dt><dd data-sum="elders">…</dd></div>
+        <div class="summary-cell"><dt>Nodes listed</dt><dd data-sum="size">…</dd></div>
+        <div class="summary-cell"><dt>Up</dt><dd data-sum="up">…</dd></div>
+        <div class="summary-cell"><dt>Down or draining</dt><dd data-sum="degraded">…</dd></div>
+        <div class="summary-cell"><dt>Operators</dt><dd data-sum="operators">…</dd></div>
+        <div class="summary-cell"><dt>Directory age</dt><dd data-sum="age">…</dd></div>
+      </dl>
+      <p class="dash-state"><span class="state-dot" data-state-dot></span><strong data-state role="status" aria-live="polite" aria-atomic="true">Waiting for the first observation</strong><span data-observed></span></p>
+    </header>
+
+    <section class="dash-section" aria-labelledby="elders-title">
+      <div class="section-head">
+        <h2 id="elders-title">Elder Trees</h2>
+        <p>Each Elder is observed on its own. A client fails over between them, so one can be down while the canopy still works.</p>
+      </div>
+      <div class="elder-grid" data-elders></div>
+    </section>
+
+    <section class="dash-section" aria-labelledby="trend-title">
+      <div class="section-head">
+        <h2 id="trend-title">Since this dashboard started</h2>
+        <p data-trend-meta>Kept in memory only. Counts and booleans, no node identities.</p>
+      </div>
+      <div class="trend-panel">
+        <div class="trend-chart">
+          <div class="trend-label"><span>Nodes listed</span><strong data-trend-now>…</strong></div>
+          <svg class="spark" viewBox="0 0 600 72" preserveAspectRatio="none" role="img" aria-label="Nodes listed over time" data-spark>
+            <path class="spark-grid" d="M0,18.5 H600 M0,36.5 H600 M0,54.5 H600"></path>
+            <path class="spark-area" d=""></path>
+            <path class="spark-line" d=""></path>
+          </svg>
+          <div class="trend-axis"><span data-trend-from></span><span data-trend-range></span><span data-trend-to></span></div>
+        </div>
+        <div class="trend-strips" data-strips></div>
+      </div>
+    </section>
+
+    <section class="dash-section" aria-labelledby="nodes-title">
+      <div class="section-head">
+        <h2 id="nodes-title">Nodes</h2>
+        <p>Merged from verified directories. Onions are cut to 16 characters, operators reduce to a staked flag, and no row carries a region.</p>
+      </div>
+      <div class="table-scroll" tabindex="0" role="region" aria-labelledby="nodes-title">
+        <table class="node-table">
+          <thead>
+            <tr>
+              <th scope="col">Node</th>
+              <th scope="col">Listed by</th>
+              <th scope="col">Health</th>
+              <th scope="col">Weight</th>
+              <th scope="col">Protocol</th>
+              <th scope="col">Admits</th>
+              <th scope="col">Stake</th>
+              <th scope="col" data-dial-col>Dial</th>
+            </tr>
+          </thead>
+          <tbody data-nodes>
+            <tr><td class="empty" colspan="8">No verified directory yet.</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="dash-section" aria-labelledby="mix-title">
+      <div class="section-head">
+        <h2 id="mix-title">Canopy mix</h2>
+        <p>Aggregate counts only. A region is named only when at least <span data-k>2</span> nodes declare it; thinner ones fold into an unnamed remainder.</p>
+      </div>
+      <div class="mix-grid">
+        <div class="mix-panel"><h3>Declared region</h3><ul class="bars" data-mix="regions"></ul></div>
+        <div class="mix-panel"><h3>Admission paths</h3><ul class="bars" data-mix="admits"></ul></div>
+        <div class="mix-panel"><h3>Nodes by Elder coverage</h3><ul class="bars" data-mix="coverage"></ul></div>
+      </div>
+    </section>
+
+    <footer class="dash-foot">
+      <span>Read-only. Every signature is checked in this process with the same code clients use.</span>
+      <span data-refresh>Refreshes every 15 s</span>
+    </footer>
+  </main>
+</body>
+</html>
