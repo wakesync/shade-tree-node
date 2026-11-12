@@ -330,8 +330,9 @@ trust the node's log view. Both paths now work against the same contract.
 at 10k, Alchemy free at 2k), resolve the head block once per refresh so every page is consistent,
 start each contract at its deploy block from the network record (`deployBlocks`, or
 `SHADE_TREE_FROM_BLOCK` / `SHADE_TREE_FROM_BLOCKS`), and on finalized reads keep the replayed tree and only fetch
-and apply new blocks afterwards (a fresh page that fails its checks, or any RPC error, means a full
-counter-checked rebuild from the start block). A poll that detects a root change hands its
+and apply new blocks afterwards (a fresh page that fails its checks, or a finalized block whose
+hash changed at the same height, means a full counter-checked rebuild from the start block; an RPC
+error serves last-known-good for that refresh and the next successful refresh rebuilds). A poll that detects a root change hands its
 snapshot to the gateway, so the change costs one refresh, not two. The gateway fails SOFT at startup when the chain is unreadable but
 `members.json` gives a root (`shade_tree_gateway_root_source_degraded`), and closed when nothing would be
 trusted. `docs/OPERATOR.md` "Public RPC log-range caps"; `docs/CONFIG.md`.

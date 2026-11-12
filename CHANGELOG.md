@@ -10,11 +10,14 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
   tree from the full event history. That costs about 5.5 ms per member and blocks the gateway
   while it runs: 0.5 s at 100 members, 5.5 s at 1 000, 109 s at 20 000. The provider now keeps the
   tree and applies only the new finalized member events (about 5 ms each). An unchanged head does
-  no tree work at all.
+  no tree work: one head read when the finalized block hash is also unchanged.
 - A fresh page is checked before it touches the kept tree: a reorged, duplicated or out-of-range
   log, a leaf index that is not the next slot, or a result that disagrees with the contract's
   `nextIndex` / `activeCount` is refused, and that refresh rebuilds from the start block (counter
-  checked, as before). Any RPC error still drops the cache.
+  checked, as before). A finalized block at the same height with a different hash also rebuilds;
+  if the RPC returns no block hash, the same-height poll checks the contract counters instead.
+- An RPC error anywhere in a refresh (the head read included) drops the kept tree. That refresh
+  serves the last-known-good roots; the next successful refresh is the full rebuild.
 - A poll that detects a root change now hands its snapshot to the gateway. The gateway used to
   read the provider again, which was a second full rebuild on every membership change.
 - `onChange` callbacks get the snapshot as a third argument (`cb(roots, error, snapshot)`);

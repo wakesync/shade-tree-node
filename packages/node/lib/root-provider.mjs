@@ -270,11 +270,14 @@ export function NodeRootProvider({
   // to the kept tree (applyFreshSuffix): one small eth_getLogs and about 5 ms of hashing per new
   // member, instead of re-paging the history every 12 s and rebuilding the whole depth-20 tree
   // (about 5.5 ms per member, synchronous: 5.5 s of event-loop stall per poll at 1 000 members).
-  // Any error, a suffix that fails its checks (reorged/duplicate/out-of-window log, an index gap,
-  // a counter mismatch) or a head that moved BACKWARDS (RPC behind / switched) drops the cache
-  // and this refresh rebuilds from the start block. head-N reads (SHADE_TREE_CONFIRMATIONS>0)
+  // A suffix that fails its checks (reorged/duplicate/out-of-window log, an index gap, a counter
+  // mismatch), a head that moved BACKWARDS (RPC behind / switched), or a finalized block at the
+  // same height whose hash changed (an RPC pool switching backends) drops the kept tree and this
+  // refresh rebuilds from the start block. An RPC error anywhere in the refresh (head read
+  // included) drops the kept tree too: that refresh serves last-known-good (withCache) and the
+  // NEXT successful refresh is the full rebuild. head-N reads (SHADE_TREE_CONFIRMATIONS>0)
   // always rebuild (a reorg deeper than N would otherwise stick).
-  let scanned = null; // { to: number, state: { group, liveIndex, active } }
+  let scanned = null; // { to: number, hash: string|null, state: { group, liveIndex, active } }
   let lastSuccessfulAt = null;
   // Counters for tests and debugging: how often the tree was rebuilt from the full history vs
   // extended by a fresh suffix, and why the last suffix was refused (null if none was).
@@ -282,21 +285,46 @@ export function NodeRootProvider({
 
   const currentRoots = withCache(async () => {
     const refreshStartedAt = now();
-    const tag = await confirmedBlockTag(rpcUrl);
-    const blk = await rpc("eth_getBlockByNumber", [tag, false], rpcUrl);
-    const observedAtBlock = blk ? Number(BigInt(blk.number)) : null;
-    const toBlock = blk ? blk.number : tag;
-
-    // eth_getLogs the Member*/Deposit/Slashed events up to the confirmation-depth block (chunked
-    // + paged, fetchMemberLogs; the start block is this contract's own, fromBlockFor). An
-    // unchanged finalized head reuses the kept tree with no RPC call at all.
-    const finalizedRead = tag === "finalized" && observedAtBlock != null;
-    let incremental = finalizedRead && scanned != null && observedAtBlock >= scanned.to;
+    let tag;
+    let observedAtBlock;
+    let blockHash;
+    let finalizedRead;
+    let incremental;
     let state;
     let transitions = [];
     try {
+      // The head read and its decoding sit inside the invalidation boundary: a failed or
+      // undecodable head read drops the kept tree like any other RPC error.
+      tag = await confirmedBlockTag(rpcUrl);
+      const blk = await rpc("eth_getBlockByNumber", [tag, false], rpcUrl);
+      observedAtBlock = blk ? Number(BigInt(blk.number)) : null;
+      blockHash = blk && typeof blk.hash === "string" && /^0x[0-9a-fA-F]{64}$/.test(blk.hash) ? blk.hash.toLowerCase() : null;
+      const toBlock = blk ? blk.number : tag;
+
+      // eth_getLogs the Member*/Deposit/Slashed events up to the confirmation-depth block (chunked
+      // + paged, fetchMemberLogs; the start block is this contract's own, fromBlockFor).
+      finalizedRead = tag === "finalized" && observedAtBlock != null;
+      incremental = finalizedRead && scanned != null && observedAtBlock >= scanned.to;
       let counters;
-      if (incremental && observedAtBlock > scanned.to) {
+      if (incremental && observedAtBlock === scanned.to) {
+        // Same height. The same finalized block (same hash) reuses the kept tree after the head
+        // read alone. A different hash at that height means the RPC's view of the chain changed
+        // (a backend switch, or a reorg the RPC reports), so the kept tree is not trusted. When
+        // either hash is missing, fall back to the contract's counters at that block, the same
+        // consistency check a full replay uses.
+        if (blockHash != null && scanned.hash != null) {
+          if (blockHash !== scanned.hash) {
+            stats.lastRejection = `finalized block ${observedAtBlock} changed hash`;
+            incremental = false;
+          }
+        } else {
+          counters = await contractCounters(addr, toBlock, rpcUrl);
+          if (!replayMatchesCounters(scanned.state, counters)) {
+            stats.lastRejection = `kept tree disagrees with the contract counters at unchanged block ${observedAtBlock}`;
+            incremental = false;
+          }
+        }
+      } else if (incremental) {
         // The suffix is checked against the contract's own counters at the same block, exactly
         // as a full replay is (replayVerified): a dropped fresh log must not stick in the tree.
         counters = await contractCounters(addr, toBlock, rpcUrl);
@@ -333,12 +361,13 @@ export function NodeRootProvider({
         stats.fullRebuilds++;
       }
     } catch (e) {
-      // Same posture as before the tree was kept: any RPC error drops the cache, so the next
-      // successful refresh is a full, counter-checked rebuild.
+      // Same posture as before the tree was kept: any RPC error (head read included) drops the
+      // kept tree. withCache serves last-known-good for THIS refresh; the next successful refresh
+      // is a full, counter-checked rebuild.
       scanned = null;
       throw e;
     }
-    scanned = finalizedRead ? { to: observedAtBlock, state } : null;
+    scanned = finalizedRead ? { to: observedAtBlock, hash: blockHash, state } : null;
 
     const active = state.active;
     const root = stateRoot(state);
@@ -615,7 +644,7 @@ function applyMemberLog(state, log) {
   const commitment = BigInt(log.topics[1]).toString(); // indexed commitment = topics[1]
   const g = state.group;
   if (REGISTERED_TOPICS.has(topic0)) {
-    // A register APPENDS a fresh leaf at the next free index — exactly the contract's
+    // A register APPENDS a fresh leaf at the next free index, exactly the contract's
     // monotonic nextIndex. `g.members.length` is that append index. The guard is purely
     // defensive: the contract reverts a second active registration of the same
     // commitment (AlreadyMember), so a duplicate register log can only be a reorg echo.

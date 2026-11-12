@@ -820,7 +820,10 @@ Since that night the gateway does three things on its own (`packages/node/lib/ro
   blocks the gateway: 5.5 s per poll at 1 000 members). A fresh page that does not fit the kept
   tree (a reorged, duplicated or out-of-range log, a leaf-index gap, or a result that disagrees
   with the contract's `nextIndex` / `activeCount`) is refused and that refresh rebuilds from the
-  start block, as does any RPC error.
+  start block. So does a finalized block at the same height whose hash changed (an RPC pool that
+  switched backends); an RPC that returns no hash gets a counter check instead. An RPC error
+  (head read included) drops the kept tree: that refresh serves the last-known-good roots, and the
+  next successful refresh is the full rebuild.
 - **Starts at the deploy block.** Each contract's scan starts at its own deploy block from a
   committed network record's `deployBlocks`, including when the box pins
   `SHADE_TREE_GROUP_CONTRACT` / `SHADE_TREE_PAID_ACCESS_CONTRACT` by hand. Historical records

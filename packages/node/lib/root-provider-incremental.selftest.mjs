@@ -9,7 +9,9 @@
 //      bytes) are REJECTED before the kept tree is touched;
 //   3. the provider end to end over a fake RPC: steady polls never re-scan, a rejected suffix falls
 //      back to a full counter-checked rebuild from the start block, and the root always equals the
-//      oracle;
+//      oracle; a finalized block at the SAME height with a different hash (an RPC view change that
+//      carries a removal) is not served from the kept tree; a hashless head falls back to the
+//      contract counters; a head-read RPC error or an undecodable head drops the kept tree;
 //   4. the gateway applies the snapshot its poll already read (one provider refresh per change).
 //
 //   node packages/node/lib/root-provider-incremental.selftest.mjs
@@ -82,6 +84,7 @@ function equivalence() {
     let polls = 0;
     let removalsSeen = 0;
     let allTransitionsMatch = true;
+    let allPollsMatch = true;
     for (let i = 0; i < blocks.length; ) {
       const step = 1 + ((i + seed) % 4);
       const upTo = blocks[Math.min(blocks.length - 1, i + step - 1)];
@@ -96,10 +99,13 @@ function equivalence() {
       // transitions are exactly what a full replay reports for the same suffix
       const expectT = reconstructGroup(prefix, { trackFrom: prevCount }).transitions;
       if (!same(res.transitions, expectT)) allTransitionsMatch = false;
+      // after EVERY poll: root, live map, slot count and live count equal the full rebuild
+      if (!same(summary(state), summary(stateFrom(prefix)))) allPollsMatch = false;
       after = upTo;
       polls++;
       i += step;
     }
+    ok(allPollsMatch, `seed ${seed}: after each of ${polls} polls, root, live map, slot count and live count equal reconstructGroup over the same prefix`);
     ok(same(summary(state), summary(full)), `seed ${seed}: ${logs.length} logs in ${polls} polls -> root, live map, ${full.group.members.length} slots, ${full.active} live all equal the full rebuild (${removalsSeen} removals)`);
     ok(allTransitionsMatch, `seed ${seed}: per-poll transitions equal reconstructGroup(trackFrom) on the same prefix`);
   }
@@ -165,7 +171,10 @@ function adversarial() {
 // counters (nextIndex / activeCount) computed from the logs up to the asked block. `lie` lets a
 // test drop or add logs in what eth_getLogs returns for a given window.
 function fakeRpc({ logs, head }) {
-  const state = { head, getLogs: [], methods: [], lie: null, failLogs: false };
+  // `fork` names the RPC's current view of the chain: the block hash is a function of (fork,
+  // height), so bumping it changes the hash of an already-seen height. `failHead` makes the head
+  // read error out, `badHead` returns an undecodable block number, `noHash` omits the hash.
+  const state = { head, getLogs: [], methods: [], lie: null, failLogs: false, fork: 0, failHead: false, badHead: false, noHash: false };
   const upTo = (n) => logs.filter((l) => Number(BigInt(l.blockNumber)) <= n);
   const srv = http.createServer((req, res) => {
     let body = "";
@@ -175,9 +184,13 @@ function fakeRpc({ logs, head }) {
       state.methods.push(j.method);
       const reply = (result, error) => { res.setHeader("content-type", "application/json"); res.end(JSON.stringify(error ? { jsonrpc: "2.0", id: j.id, error } : { jsonrpc: "2.0", id: j.id, result })); };
       if (j.method === "eth_getBlockByNumber") {
+        if (state.failHead) return reply(null, { code: -32000, message: "head unavailable" });
+        if (state.badHead) return reply({ number: "not-a-number", hash: word(1), stateRoot: word(0) });
         const tag = j.params[0];
         const n = tag === "latest" || tag === "finalized" ? state.head : Number(BigInt(tag));
-        return reply({ number: hex(n), stateRoot: word(0) });
+        const blk = { number: hex(n), stateRoot: word(0) };
+        if (!state.noHash) blk.hash = word(BigInt(state.fork) * 1_000_000_000n + BigInt(n));
+        return reply(blk);
       }
       if (j.method === "eth_getLogs") {
         const f = j.params[0];
@@ -265,6 +278,63 @@ async function provider() {
     rpc.state.failLogs = false;
     const rAfter = await p.currentRoots();
     ok(rErr.stale === true && rAfter.roots[0] === oracle() && fullScans() === 5, "an eth_getLogs error mid-suffix serves last-known-good, drops the kept tree, and the next read is a full rebuild");
+
+    // SAME height, DIFFERENT finalized block hash, and that block now carries a removal (an RPC
+    // pool switching to a backend with another view). The kept tree must not be served.
+    {
+      const victim = [...reconstructGroup(visible).liveIndex.keys()][0];
+      const keptRoot = (await p.currentRoots()).roots[0];
+      const scansBefore = fullScans();
+      visible.push(rm(TOPIC.exiting, BigInt(victim), rpc.state.head, 7));
+      rpc.state.fork = 1;
+      const rFork = await p.currentRoots();
+      ok(rFork.roots[0] === oracle() && rFork.roots[0] !== keptRoot && fullScans() === scansBefore + 1 && /changed hash/.test(p.stats().lastRejection) && rFork.roots.length === 1,
+        `same height, changed finalized hash, a removal at that height -> refused (${p.stats().lastRejection}) -> full rebuild, oracle root, ring reset`);
+      const m0 = rpc.state.methods.length;
+      const rFork2 = await p.currentRoots();
+      ok(rFork2.roots[0] === oracle() && rpc.state.methods.slice(m0).join() === "eth_getBlockByNumber", "the new block at that height is then kept: the next unchanged poll is the head read only");
+    }
+
+    // A head without a hash (some RPCs/proxies drop it): the same-height path falls back to the
+    // contract counters instead of trusting the kept tree blindly.
+    {
+      rpc.state.noHash = true;
+      const m0 = rpc.state.methods.length;
+      const scansBefore = fullScans();
+      const rNoHash = await p.currentRoots();
+      ok(rNoHash.roots[0] === oracle() && rpc.state.methods.slice(m0).join() === "eth_getBlockByNumber,eth_call,eth_call" && fullScans() === scansBefore,
+        "hashless head at the same height, counters agree -> kept tree, head read + 2 counter calls, no rescan");
+      const victim = [...reconstructGroup(visible).liveIndex.keys()][0];
+      visible.push(rm(TOPIC.withdrawn, BigInt(victim), rpc.state.head, 8));
+      const rNoHash2 = await p.currentRoots();
+      ok(rNoHash2.roots[0] === oracle() && fullScans() === scansBefore + 1 && /disagrees with the contract counters/.test(p.stats().lastRejection),
+        "hashless head at the same height, a removal the kept tree lacks -> counters disagree -> full rebuild, oracle root");
+      rpc.state.noHash = false;
+      await p.currentRoots(); // re-learn the hash (changed from null: counter path again, agrees)
+    }
+
+    // A head-read RPC error: that refresh serves last-known-good, the kept tree is dropped, and
+    // the next successful refresh at the SAME height is a full rebuild (not a head read only).
+    {
+      rpc.state.failHead = true;
+      const rHeadErr = await p.currentRoots();
+      rpc.state.failHead = false;
+      const scansBefore = fullScans();
+      const rHeadAfter = await p.currentRoots();
+      ok(rHeadErr.stale === true && rHeadAfter.roots[0] === oracle() && fullScans() === scansBefore + 1,
+        "a head-read RPC error serves last-known-good now, drops the kept tree, and the next successful refresh at the same height is a full rebuild");
+    }
+
+    // An undecodable head (block number not hex) is treated the same way.
+    {
+      rpc.state.badHead = true;
+      const rBad = await p.currentRoots();
+      rpc.state.badHead = false;
+      const scansBefore = fullScans();
+      const rBadAfter = await p.currentRoots();
+      ok(rBad.stale === true && rBadAfter.roots[0] === oracle() && fullScans() === scansBefore + 1,
+        "an undecodable head block serves last-known-good, drops the kept tree, and the next refresh is a full rebuild");
+    }
   } finally {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     rpc.close();
