@@ -543,8 +543,11 @@ export async function initRoots({
   };
   if (want.onchain) {
     provider = makeProvider(contracts.map((c) => c.address));
-    const refresh = async () => {
-      const r = await loadGroupOnchain(provider);
+    // refresh(snapshot?): apply the provider's roots. The poll callback passes the snapshot it
+    // just read, so a detected change costs one provider refresh, not two (the second read was a
+    // second full scan on the node provider). Startup has no snapshot yet and reads once.
+    const refresh = async (snapshot = null) => {
+      const r = await loadGroupOnchain(provider, snapshot);
       chainRoots = r.recentRoots || [];
       _setRootSourceInfo({ block: r.observedAtBlock, leaves: r.leafCount });
       perSource = r.perSource || [{
@@ -581,7 +584,7 @@ export async function initRoots({
       }
     }
     stopRootPolling = provider.onChange?.(
-      async (_roots, pollError) => {
+      async (_roots, pollError, snapshot) => {
         if (pollError) {
           chainRoots = [];
           perSource = contracts.map((c) => ({ contract: c.address, roots: [], leafCount: null, error: pollError.message }));
@@ -591,7 +594,7 @@ export async function initRoots({
           log.error("root freshness window expired; rejecting on-chain admission until a fresh read succeeds", { err: pollError.message });
           return;
         }
-        await refresh()
+        await refresh(snapshot || null)
           .then(() => checkPaidFloor(false))
           .catch((e) => log.warn("root refresh failed within freshness window; keeping recent-roots", { err: e.message }));
       },

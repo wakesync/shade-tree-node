@@ -318,10 +318,15 @@ export async function loadGroup() {
 // updated to build it with newGroup()), so the reconstructed root matches proof roots.
 // A CompositeRootProvider (several contracts, T-FEAT-7) also yields `perSource` / `errors`,
 // passed through untouched so the gateway can log and gauge each source.
-export async function loadGroupOnchain(rootProvider) {
-  const provider =
-    rootProvider || (await import("./root-provider.mjs")).makeRootProvider("node");
-  const r = await provider.currentRoots();
+// `snapshot` (optional): a currentRoots() result the caller already holds (the provider's poll
+// hands it to its onChange callback); it is used as is instead of refreshing a second time.
+export async function loadGroupOnchain(rootProvider, snapshot = null) {
+  let r = snapshot;
+  if (!r) {
+    const provider =
+      rootProvider || (await import("./root-provider.mjs")).makeRootProvider("node");
+    r = await provider.currentRoots();
+  }
   return {
     recentRoots: (r.roots || []).map(String),
     perSource: r.perSource,

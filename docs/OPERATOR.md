@@ -814,7 +814,13 @@ Since that night the gateway does three things on its own (`packages/node/lib/ro
   under every cap above; `head` is resolved to a number once so every page sees the same block); a
   window the RPC refuses is halved and retried (down to 8 blocks); pieces are concatenated in
   order. Finalized reads then continue incrementally (only the new blocks each refresh), so a
-  long-lived gateway costs one small call per poll, not a re-scan of the history.
+  long-lived gateway costs one small call per poll, not a re-scan of the history. The replayed
+  tree is kept too: each poll applies only the new member events to it (about 5 ms of hashing per
+  new member) instead of rebuilding it from the whole history (about 5.5 ms per member, which
+  blocks the gateway: 5.5 s per poll at 1 000 members). A fresh page that does not fit the kept
+  tree (a reorged, duplicated or out-of-range log, a leaf-index gap, or a result that disagrees
+  with the contract's `nextIndex` / `activeCount`) is refused and that refresh rebuilds from the
+  start block, as does any RPC error.
 - **Starts at the deploy block.** Each contract's scan starts at its own deploy block from a
   committed network record's `deployBlocks`, including when the box pins
   `SHADE_TREE_GROUP_CONTRACT` / `SHADE_TREE_PAID_ACCESS_CONTRACT` by hand. Historical records

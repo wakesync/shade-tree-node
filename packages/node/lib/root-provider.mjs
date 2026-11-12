@@ -7,6 +7,8 @@
 //   currentRoots() -> { roots: string[], observedAtBlock: number, finalized: boolean }
 //        roots = the current root plus every root still inside the freshness window F.
 //   onChange(cb)   -> unsubscribe        (optional; refresh promptly on membership change)
+//                     cb(roots, error, snapshot): `snapshot` is the currentRoots() result the poll
+//                     just read, so the consumer need not read (and rebuild) a second time.
 //
 // Two providers, interchangeable:
 //   - NodeRootProvider  : trusted local node. The solo-staker path: someone running this
@@ -263,14 +265,20 @@ export function NodeRootProvider({
   const newRootRing = () => makeFreshRootRing({ maxRoots: freshnessRoots, freshnessMs, now });
   let pushRoot = newRootRing();
 
-  // Incremental scan state (finalized reads only): the logs already replayed up to `scannedTo`.
-  // Finalized blocks do not reorg, so the next refresh only fetches (scannedTo, newHead] and
-  // appends -- one small call per poll instead of re-paging the whole history from the deploy
-  // block every 12 s against a public RPC. Any error or a head that moved BACKWARDS (RPC behind /
-  // switched) drops the cache and the next refresh rescans from the start block. head-N reads
-  // (SHADE_TREE_CONFIRMATIONS>0) always rescan (a reorg deeper than N would otherwise stick).
-  let scanned = null; // { to: number, logs: [] }
+  // Incremental state (finalized reads only): the replayed TREE as of block `to`. Finalized
+  // blocks do not reorg, so the next refresh only fetches (to, newHead] and applies that suffix
+  // to the kept tree (applyFreshSuffix): one small eth_getLogs and about 5 ms of hashing per new
+  // member, instead of re-paging the history every 12 s and rebuilding the whole depth-20 tree
+  // (about 5.5 ms per member, synchronous: 5.5 s of event-loop stall per poll at 1 000 members).
+  // Any error, a suffix that fails its checks (reorged/duplicate/out-of-window log, an index gap,
+  // a counter mismatch) or a head that moved BACKWARDS (RPC behind / switched) drops the cache
+  // and this refresh rebuilds from the start block. head-N reads (SHADE_TREE_CONFIRMATIONS>0)
+  // always rebuild (a reorg deeper than N would otherwise stick).
+  let scanned = null; // { to: number, state: { group, liveIndex, active } }
   let lastSuccessfulAt = null;
+  // Counters for tests and debugging: how often the tree was rebuilt from the full history vs
+  // extended by a fresh suffix, and why the last suffix was refused (null if none was).
+  const stats = { fullRebuilds: 0, suffixApplies: 0, lastRejection: null };
 
   const currentRoots = withCache(async () => {
     const refreshStartedAt = now();
@@ -280,35 +288,60 @@ export function NodeRootProvider({
     const toBlock = blk ? blk.number : tag;
 
     // eth_getLogs the Member*/Deposit/Slashed events up to the confirmation-depth block (chunked
-    // + paged, fetchMemberLogs; the start block is this contract's own, fromBlockFor).
-    let logs;
-    let replay;
-    const incremental = tag === "finalized" && observedAtBlock != null && scanned && observedAtBlock >= scanned.to;
-    const previousLogCount = incremental ? scanned.logs.length : Number.POSITIVE_INFINITY;
+    // + paged, fetchMemberLogs; the start block is this contract's own, fromBlockFor). An
+    // unchanged finalized head reuses the kept tree with no RPC call at all.
+    const finalizedRead = tag === "finalized" && observedAtBlock != null;
+    let incremental = finalizedRead && scanned != null && observedAtBlock >= scanned.to;
+    let state;
+    let transitions = [];
     try {
-      // The replay is checked against the contract's own counters (replayVerified): a public RPC
-      // pool can answer a wide eth_getLogs with an EMPTY page from a pruned backend, and a root
-      // built from that would admit nobody the other nodes admit.
-      ({ logs, replay } = await replayVerified({
-        contract: addr,
-        rpcUrl,
-        toBlock,
-        trackFrom: previousLogCount,
-        fetchAll: async (chunk) => {
-          if (incremental && chunk === LOGS_CHUNK()) {
-            const fresh = observedAtBlock > scanned.to ? await fetchMemberLogs({ contract: addr, rpcUrl, fromBlock: hexBlock(scanned.to + 1), toBlock, chunk }) : [];
-            return scanned.logs.concat(fresh);
-          }
-          return fetchMemberLogs({ contract: addr, rpcUrl, fromBlock: fromBlockFor(addr), toBlock, chunk });
-        },
-      }));
+      let counters;
+      if (incremental && observedAtBlock > scanned.to) {
+        // The suffix is checked against the contract's own counters at the same block, exactly
+        // as a full replay is (replayVerified): a dropped fresh log must not stick in the tree.
+        counters = await contractCounters(addr, toBlock, rpcUrl);
+        const fresh = await fetchMemberLogs({ contract: addr, rpcUrl, fromBlock: hexBlock(scanned.to + 1), toBlock });
+        let applied;
+        try {
+          applied = applyFreshSuffix(scanned.state, fresh, { after: scanned.to, upTo: observedAtBlock, counters });
+        } catch (e) {
+          applied = { reject: `unparseable log in the fresh suffix (${e.message})` };
+        }
+        if (applied.reject) {
+          stats.lastRejection = applied.reject;
+          incremental = false; // fall through to the full rebuild below
+        } else {
+          stats.suffixApplies++;
+          transitions = applied.transitions;
+        }
+      }
+      if (incremental) {
+        state = scanned.state;
+      } else {
+        scanned = null;
+        // The replay is checked against the contract's own counters (replayVerified): a public RPC
+        // pool can answer a wide eth_getLogs with an EMPTY page from a pruned backend, and a root
+        // built from that would admit nobody the other nodes admit.
+        const { replay } = await replayVerified({
+          contract: addr,
+          rpcUrl,
+          toBlock,
+          counters,
+          fetchAll: (chunk) => fetchMemberLogs({ contract: addr, rpcUrl, fromBlock: fromBlockFor(addr), toBlock, chunk }),
+        });
+        state = { group: replay.group, liveIndex: replay.liveIndex, active: replay.active };
+        stats.fullRebuilds++;
+      }
     } catch (e) {
+      // Same posture as before the tree was kept: any RPC error drops the cache, so the next
+      // successful refresh is a full, counter-checked rebuild.
       scanned = null;
       throw e;
     }
-    scanned = tag === "finalized" && observedAtBlock != null ? { to: observedAtBlock, logs } : null;
+    scanned = finalizedRead ? { to: observedAtBlock, state } : null;
 
-    const { root, active, transitions } = replay;
+    const active = state.active;
+    const root = stateRoot(state);
     // Never timestamp historical transitions as if they happened at recovery time. After the
     // previous observation has aged past F, or an incremental finalized scan was invalidated and
     // required a full replay, we cannot safely infer when the replayed transitions happened from
@@ -330,7 +363,7 @@ export function NodeRootProvider({
   }, { maxStaleMs: freshnessMs, now });
 
   const describe = () => ({ provider: "node", stateRootSource: "trusted node (RPC trusted by design; solo-staker path)", stateRootVerified: false, contract: addr });
-  return { currentRoots, onChange: pollOnChange(currentRoots), describe, contract: addr };
+  return { currentRoots, onChange: pollOnChange(currentRoots), describe, contract: addr, stats: () => ({ ...stats }) };
 }
 
 // ---- eth_getLogs paging (public RPC range caps) --------------------------------
@@ -540,46 +573,125 @@ export function reconstructRoot(logs) {
 // finalized suffix it learned since its previous poll; an initial history scan never admits
 // historical intermediate roots.
 export function reconstructGroup(logs, { trackFrom = Number.POSITIVE_INFINITY } = {}) {
-  const ordered = [...logs].sort(
-    (a, b) =>
-      Number(BigInt(a.blockNumber) - BigInt(b.blockNumber)) ||
-      Number(BigInt(a.logIndex) - BigInt(b.logIndex))
-  );
-  const g = newGroup();                 // empty depth-20 RLN tree
-  const liveIndex = new Map();          // commitment(string) -> its current live leaf index
-  let active = 0;                       // members currently in the admission set
+  const ordered = sortLogs(logs);
+  const state = newReplayState();
   const transitions = [];
   for (let position = 0; position < ordered.length; position++) {
-    const log = ordered[position];
-    const topic0 = (log.topics[0] || "").toLowerCase();
-    const commitment = BigInt(log.topics[1]).toString(); // indexed commitment = topics[1]
-    let changed = false;
-    if (REGISTERED_TOPICS.has(topic0)) {
-      // A register APPENDS a fresh leaf at the next free index — exactly the contract's
-      // monotonic nextIndex. `g.members.length` is that append index. The guard is purely
-      // defensive: the contract reverts a second active registration of the same
-      // commitment (AlreadyMember), so a duplicate register log can only be a reorg echo.
-      if (liveIndex.has(commitment)) continue;
-      liveIndex.set(commitment, g.members.length);
-      g.addMember(BigInt(commitment));
-      active++;
-      changed = true;
-    } else if (REMOVED_TOPICS.has(topic0)) {
-      const idx = liveIndex.get(commitment);
-      if (idx === undefined) continue;  // not currently live -> nothing to vacate
-      g.removeMember(idx);              // ZERO-IN-PLACE at the original index (indices preserved)
-      liveIndex.delete(commitment);
-      active--;
-      changed = true;
-    }
-    if (changed && position >= trackFrom) transitions.push(active === 0 ? null : g.root.toString());
+    const changed = applyMemberLog(state, ordered[position]);
+    if (changed && position >= trackFrom) transitions.push(stateRoot(state));
   }
   // COORDINATION: the on-chain StakedReputationSet / PaidAccessSet MUST maintain the identical
   // circom-rln depth-20 Poseidon tree of rateCommitments for these roots to match proof roots,
   // and MUST emit the rateCommitment as the indexed topic[1]. Removed leaves are zeroed in
-  // place (above), matching the contract's immutable indices. An empty admission set has no
-  // root (root null; the gateway then accepts nothing from this source).
-  return { group: g, liveIndex, active, root: active === 0 ? null : g.root.toString(), transitions };
+  // place (applyMemberLog), matching the contract's immutable indices. An empty admission set
+  // has no root (root null; the gateway then accepts nothing from this source).
+  return replayResult(state, transitions);
+}
+
+// The replay is a fold over ordered logs. It is split into these pieces so that the node
+// provider can keep the folded state (the tree) between polls and apply only the fresh
+// finalized suffix (applyFreshSuffix below), while a full rebuild runs the very same steps from
+// an empty state. One code path for both is what makes "incremental root == full rebuild" hold
+// by construction rather than by a second implementation agreeing with the first.
+const logOrder = (a, b) =>
+  Number(BigInt(a.blockNumber) - BigInt(b.blockNumber)) ||
+  Number(BigInt(a.logIndex) - BigInt(b.logIndex));
+function sortLogs(logs) {
+  return [...logs].sort(logOrder);
+}
+function newReplayState() {
+  return {
+    group: newGroup(),        // empty depth-20 RLN tree
+    liveIndex: new Map(),     // commitment(string) -> its current live leaf index
+    active: 0,                // members currently in the admission set
+  };
+}
+const stateRoot = (state) => (state.active === 0 ? null : state.group.root.toString());
+const replayResult = (state, transitions) => ({ group: state.group, liveIndex: state.liveIndex, active: state.active, root: stateRoot(state), transitions });
+
+// applyMemberLog(state, log) -> changed: apply ONE ordered Member* log to the replay state.
+function applyMemberLog(state, log) {
+  const topic0 = (log.topics[0] || "").toLowerCase();
+  const commitment = BigInt(log.topics[1]).toString(); // indexed commitment = topics[1]
+  const g = state.group;
+  if (REGISTERED_TOPICS.has(topic0)) {
+    // A register APPENDS a fresh leaf at the next free index — exactly the contract's
+    // monotonic nextIndex. `g.members.length` is that append index. The guard is purely
+    // defensive: the contract reverts a second active registration of the same
+    // commitment (AlreadyMember), so a duplicate register log can only be a reorg echo.
+    if (state.liveIndex.has(commitment)) return false;
+    state.liveIndex.set(commitment, g.members.length);
+    g.addMember(BigInt(commitment));
+    state.active++;
+    return true;
+  }
+  if (REMOVED_TOPICS.has(topic0)) {
+    const idx = state.liveIndex.get(commitment);
+    if (idx === undefined) return false; // not currently live -> nothing to vacate
+    g.removeMember(idx);                 // ZERO-IN-PLACE at the original index (indices preserved)
+    state.liveIndex.delete(commitment);
+    state.active--;
+    return true;
+  }
+  return false;
+}
+
+// The leaf index the contract itself reports for a register log, or null when the log does not
+// carry one we can read. StakedReputationSet indexes it (topics[2], `uint64 indexed index`);
+// PaidAccessSet puts it in data (limit, index, root). A fixture log without either is accepted.
+function claimedRegisterIndex(log, topic0) {
+  if (topic0 === TOPIC.registered || topic0 === TOPIC.registeredV4) {
+    return log.topics.length > 2 && log.topics[2] != null ? BigInt(log.topics[2]) : null;
+  }
+  const data = typeof log.data === "string" ? log.data : "";
+  if (!/^0x[0-9a-fA-F]*$/.test(data) || data.length < 2 + 128) return null;
+  return BigInt("0x" + data.slice(2 + 64, 2 + 128));
+}
+
+// applyFreshSuffix(state, fresh, { after, upTo, counters }) -> { transitions } | { reject: reason }
+//
+// Apply the finalized logs fetched for (after, upTo] to a replay state that already holds every
+// log up to block `after`. The whole suffix is CHECKED before anything is mutated, so a rejected
+// suffix leaves the cached tree untouched and the caller does a full rebuild instead. Rejected:
+//   - a log flagged `removed` (a reorged log; finalized reads should never carry one),
+//   - a log outside (after, upTo] (an RPC that ignored the range, or a stale/replayed page),
+//   - two logs at the same (block, logIndex) (a duplicated page),
+//   - a register of a commitment that is already live (the contract reverts that: a reorg echo),
+//   - a register whose contract-reported index is not the next free slot (a gap or a reorder),
+//   - a result that does not reproduce the contract's nextIndex / activeCount (a dropped log).
+// Out-of-order logs inside the window are fine: they are sorted, as the full rebuild sorts them.
+// Untrusted RPC bytes (a non-hex field) make the check throw; the caller treats that as a reject.
+function applyFreshSuffix(state, fresh, { after, upTo, counters }) {
+  const ordered = sortLogs(fresh || []);
+  let next = state.group.members.length;
+  let active = state.active;
+  const overlay = new Map(); // commitment -> live after the suffix so far (true/false)
+  const isLive = (c) => (overlay.has(c) ? overlay.get(c) : state.liveIndex.has(c));
+  for (let i = 0; i < ordered.length; i++) {
+    const log = ordered[i];
+    if (log.removed === true) return { reject: "removed (reorged) log in the fresh suffix" };
+    const block = Number(BigInt(log.blockNumber));
+    if (!(block > after && block <= upTo)) return { reject: `log at block ${block} outside the fresh window (${after}, ${upTo}]` };
+    if (i > 0 && logOrder(ordered[i - 1], log) === 0) return { reject: `duplicate log at block ${block}` };
+    const topic0 = (log.topics[0] || "").toLowerCase();
+    const commitment = BigInt(log.topics[1]).toString();
+    if (REGISTERED_TOPICS.has(topic0)) {
+      if (isLive(commitment)) return { reject: "register of an already-live commitment" };
+      const claimed = claimedRegisterIndex(log, topic0);
+      if (claimed != null && claimed !== BigInt(next)) return { reject: `register index ${claimed} != next slot ${next}` };
+      overlay.set(commitment, true);
+      next++;
+      active++;
+    } else if (REMOVED_TOPICS.has(topic0)) {
+      if (isLive(commitment)) { overlay.set(commitment, false); active--; }
+    }
+  }
+  if (counters && (next !== counters.nextIndex || active !== counters.activeCount)) {
+    return { reject: `suffix replays to ${next} slots / ${active} live, the contract reports ${counters.nextIndex} / ${counters.activeCount}` };
+  }
+  const transitions = [];
+  for (const log of ordered) if (applyMemberLog(state, log)) transitions.push(stateRoot(state));
+  return { transitions };
 }
 
 // ---- Merkle-Patricia storage-proof verification (T-DEV-9) -------------------
@@ -816,7 +928,7 @@ export function LightClientRootProvider({
 
 // Exported for the T-DEV-9 selftest (unit-test the MPT verifier against hand-built proofs)
 // and the T-FEAT-8b selftest (both event generations reconstruct identically).
-export const _internals = { verifyMptProof, decodeCompactPath, toNibbles, TOPIC, fetchLogsChunked, asBlockNumber, LOGS_CHUNK_FLOOR, pollOnChange, pollSnapshotKey, makeFreshRootRing, withCache };
+export const _internals = { verifyMptProof, decodeCompactPath, toNibbles, TOPIC, fetchLogsChunked, asBlockNumber, LOGS_CHUNK_FLOOR, pollOnChange, pollSnapshotKey, makeFreshRootRing, withCache, newReplayState, sortLogs, applyMemberLog, applyFreshSuffix };
 
 // ---- change notification (poll; upgrade to log subscription later) ----------
 
@@ -868,7 +980,10 @@ function pollOnChange(currentRoots) {
         const next = pollSnapshotKey(snapshot);
         if (next !== last) {
           last = next;
-          await cb(snapshot.roots || [], null);
+          // The snapshot this poll just read is passed along so the consumer can apply it
+          // directly. Re-reading currentRoots() in the callback would do a second refresh (and,
+          // on the node provider, a second scan) for every change the poll detects.
+          await cb(snapshot.roots || [], null, snapshot);
         }
       } catch { /* consumer failure must not stop polling */ }
       finally { schedule(); }

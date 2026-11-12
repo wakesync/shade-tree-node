@@ -4,6 +4,22 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### Gateway: the node root provider keeps its tree between polls
+
+- With `SHADE_TREE_ROOT_PROVIDER=node` (the default), each 12 s root poll rebuilt the whole RLN
+  tree from the full event history. That costs about 5.5 ms per member and blocks the gateway
+  while it runs: 0.5 s at 100 members, 5.5 s at 1 000, 109 s at 20 000. The provider now keeps the
+  tree and applies only the new finalized member events (about 5 ms each). An unchanged head does
+  no tree work at all.
+- A fresh page is checked before it touches the kept tree: a reorged, duplicated or out-of-range
+  log, a leaf index that is not the next slot, or a result that disagrees with the contract's
+  `nextIndex` / `activeCount` is refused, and that refresh rebuilds from the start block (counter
+  checked, as before). Any RPC error still drops the cache.
+- A poll that detects a root change now hands its snapshot to the gateway. The gateway used to
+  read the provider again, which was a second full rebuild on every membership change.
+- `onChange` callbacks get the snapshot as a third argument (`cb(roots, error, snapshot)`);
+  `loadGroupOnchain(provider, snapshot)` uses it when given.
+
 ### Get access page: the terminal path is the keyless command
 
 - The Get access page and the agent brief on the landing page now show
