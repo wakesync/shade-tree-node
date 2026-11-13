@@ -4,6 +4,20 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### Bench: egress outcome classifier, sites parser and report (split from #402)
+
+- `bench/egress/lib/classify.mjs` labels one request's outcome, `lib/sites.mjs` parses a site
+  list, `lib/report.mjs` turns result rows into markdown. Pure modules with two selftests; no
+  runner, CLI or sample data yet. See `bench/egress/README.md`.
+- A block is not counted as ok: an `api` 403 is never ok and an `api` marker that matches a
+  generic error body is refused, and a challenge header or interstitial title beats the site's
+  positive marker.
+- The harness's own failures are not charged to the exit or the site: proxy refusals, harness
+  errors and cancellations are new not-measured outcomes, outside every denominator and timing.
+  A proxy's own answer to a browser's plain-http request is `proxy-refused`, not `blocked-403`.
+- The report prints no IP, hostname, kernel build string or local path. Bench code is not in the
+  coverage gate.
+
 ### Get access page: the terminal path is the keyless command
 
 - The Get access page and the agent brief on the landing page now show
