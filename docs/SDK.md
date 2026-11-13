@@ -87,6 +87,20 @@ Oversized bodies reject with code `SHADE_TREE_FETCH_BODY_TOO_LARGE`. The error
 also carries the active bound (`timeoutMs` or `maxBodyBytes`) and requests,
 responses, and tunnels acquired by that call are closed.
 
+With session tickets on, the first tunnel proves a session init and then dials the node. The
+node accepts the proof only in its epoch or the next one, and a dial that retries through Tor
+can take minutes (`dialAttempts` x 120 s plus 3 s pauses). After the dial, before anything is
+written, the client checks that the proof will still be accepted when it arrives, allowing
+15 s for the trip (`SESSION_INIT_TRANSIT_MARGIN_MS`, at most a quarter epoch). If it would
+not, the client closes that socket unused, emits
+`{ phase: "session", status: "stale", proofEpoch, arrivalEpoch, reproves }`, proves again
+with a new slot and session nonce, and dials again with the same SOCKS credential. It does
+this once. If the second proof is stale too, `connect()` rejects with
+`ShadeTreeSessionInitStaleError` (code `SHADE_TREE_SESSION_INIT_STALE`, `retryable: true`)
+and nothing is sent to the node. The re-proof uses one more slot from the epoch it is made
+in. The client does not hold the socket open while it proves, because the node's envelope
+deadline (`SHADE_TREE_ENVELOPE_TIMEOUT_MS`, 30 s from connect) is shorter than a cold proof.
+
 Dynamic discovery uses `bootnode` / `SHADE_TREE_BOOTNODE_ONION`; it requires the
 matching pinned signer and takes precedence over a static directory. With no
 explicit source, the SDK installs the current v4 Sepolia Elder+signer, staked

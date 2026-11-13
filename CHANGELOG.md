@@ -4,6 +4,21 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### JS client: a session init re-proves when a slow dial made its proof stale
+
+- The JS client proves a session init before it dials. A dial that retries through Tor can take
+  minutes, and the node then refused the init `stale-external-nullifier` (it accepts only the
+  current or the previous epoch); the request failed and the slot was spent.
+- After the dial, before the envelope is written, the client now checks the proof's epoch
+  against the time it will reach the node (15 s transit margin, at most a quarter epoch). A
+  stale proof is not sent: the client closes that socket, proves once more with a new slot and
+  nonce, and dials again with the same SOCKS credential. A second stale proof rejects with
+  `ShadeTreeSessionInitStaleError` (`SHADE_TREE_SESSION_INIT_STALE`) and sends nothing.
+- New `session` progress event `status: "stale"`. A re-proof uses one more slot of the epoch
+  it is made in. The v4 path and ticket spends are unchanged. The Rust client is not changed.
+- `ShadeTreeClient` takes an optional `now` clock for tests; it drives the slot pool's epoch
+  and the check.
+
 ### Get access page: the terminal path is the keyless command
 
 - The Get access page and the agent brief on the landing page now show

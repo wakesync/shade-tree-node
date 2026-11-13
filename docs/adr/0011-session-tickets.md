@@ -81,6 +81,11 @@ without the 32-byte secret, and a captured secret is single-use, index-bound and
 - A slot burns on an unreachable node: the Rust and JS clients prove before dialing the chosen
   node (the design's dial-before-proof is not possible with a proof-first transport). Health
   seeding keeps unreachable nodes out of the first position; the loss is one slot.
+- Proving first also means a slow dial can age the proof past the node's two-epoch window
+  (`stale-external-nullifier`). The JS client checks the proof's epoch after the dial and
+  before the write, and proves once more when it would arrive stale (one more slot); a second
+  stale proof fails locally with `SHADE_TREE_SESSION_INIT_STALE` and is never sent. The Rust
+  client does not do this yet.
 - Exact in-flight duplicates and reuse for another target are distinguished by the node-local
   spend digest; a definite pre-connect failure refunds the ticket, a timeout burns it.
 - Shaping is per book and direction (token buckets in the relay transform), so opening six

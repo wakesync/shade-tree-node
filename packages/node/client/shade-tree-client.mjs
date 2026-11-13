@@ -345,6 +345,50 @@ export const DEFAULT_FETCH_MAX_BODY_BYTES = 8 * 1024 * 1024;
 // stream, a large download) started late in a book must not run into the node's lifetime, which
 // nodes before the drain change (#379) enforce by destroying every stream. Same as the Rust client.
 export const SESSION_NEW_STREAM_HEADROOM_MS = 45_000;
+// A session init proves BEFORE it dials (the dial needs nothing from the proof, but a slow onion
+// dial can take minutes: up to dialAttempts x 120 s plus 3 s pauses). The node accepts the proof's
+// external nullifier only for its current or previous epoch (verifySessionEnvelope), so after the
+// dial the client checks that the proof will still be inside that window when the node reads it,
+// allowing this much for the envelope to cross the circuit and for small clock skew. Capped at a
+// quarter epoch so the check can never call a proof from the current epoch stale.
+export const SESSION_INIT_TRANSIT_MARGIN_MS = 15_000;
+// How many times one session init may prove again after a slow dial made its proof stale. One is
+// enough: the second proof is made right after a dial that just succeeded, so its re-dial rides a
+// warm circuit. A second stale proof fails locally instead of looping on a node that cannot be
+// reached in time.
+export const SESSION_INIT_MAX_REPROVES = 1;
+
+// The epoch a session init written at `nowMs` is expected to reach the node in (transit margin
+// included). Pure; exported for the selftest.
+export function sessionInitArrivalEpoch(nowMs, { epochSeconds = clientEpochSeconds(), marginMs = SESSION_INIT_TRANSIT_MARGIN_MS } = {}) {
+  const epochMs = Number(epochSeconds) * 1000;
+  if (!Number.isFinite(epochMs) || epochMs <= 0 || !Number.isFinite(nowMs)) return null;
+  const margin = Math.max(0, Math.min(Number(marginMs) || 0, Math.floor(epochMs / 4)));
+  return BigInt(Math.floor((nowMs + margin) / epochMs));
+}
+
+// Will a session init proved in `proofEpoch` still pass the node's freshness rule (current or
+// previous epoch) if it is written at `nowMs`? Pure; exported for the selftest.
+// Fails closed: an epoch or clock it cannot read counts as stale (the caller proves again).
+export function sessionInitFresh(proofEpoch, nowMs, options = {}) {
+  let epoch;
+  try { epoch = BigInt(proofEpoch); } catch { return false; }
+  const arrival = sessionInitArrivalEpoch(nowMs, options);
+  if (arrival == null) return false;
+  return epoch >= arrival - 1n && epoch <= arrival;
+}
+
+export class ShadeTreeSessionInitStaleError extends Error {
+  constructor({ proofEpoch, arrivalEpoch, reproves }) {
+    super(`session init: the proof epoch ${proofEpoch} would reach the node in epoch ${arrivalEpoch} after ${reproves} re-proof${reproves === 1 ? "" : "s"}; the node accepts only the current or previous epoch, so nothing was sent (a slow dial; retry)`);
+    this.name = "ShadeTreeSessionInitStaleError";
+    this.code = "SHADE_TREE_SESSION_INIT_STALE";
+    this.retryable = true;
+    this.proofEpoch = String(proofEpoch);
+    this.arrivalEpoch = String(arrivalEpoch);
+    this.reproves = reproves;
+  }
+}
 
 export class ShadeTreeGatewayAckError extends Error {
   constructor(code, message, options = {}) {
@@ -726,6 +770,9 @@ export class ShadeTreeClient {
     this._gatewayCapsByOnion = new Map();
     // Injectable prover (tests pass a fake); defaults to the real lib proveForSlot.
     this._prove = opts.prove || proveForSlot;
+    // Injectable wall clock (tests pass a fake that a slow fake dial advances). It drives the slot
+    // pool's epoch and the session-init freshness check; production uses Date.now.
+    this._now = typeof opts.now === "function" ? opts.now : Date.now;
     // This member's tier limit (T-FEAT-8): { limit } or SHADE_TREE_LIMIT; default K_SLOTS (SHADE_TREE_SLOTS, 8).
     // Must equal the limit the member's leaf was enrolled with (`shade-tree enroll --limit`).
     this.limit = Number(normLimit(fileLimit ?? opts.limit ?? process.env.SHADE_TREE_LIMIT ?? K_SLOTS));
@@ -747,6 +794,7 @@ export class ShadeTreeClient {
       slotStateDir: opts.slotStateDir,
       slotLockTimeoutMs: opts.slotLockTimeoutMs,
       unsafeAllowSlotReuseForTests: opts.unsafeAllowSlotReuseForTests === true,
+      ...(this._now === Date.now ? {} : { epochOf: () => currentEpoch(this._now()), now: this._now }),
     });
     this.pool.ensureEpoch(); // warm the current epoch in the background
   }
@@ -1171,10 +1219,9 @@ export class ShadeTreeClient {
     return null;
   }
 
-  // Prove once to open a research-v1 book at `cand`, then spend its first ticket for `target`.
-  async _sessionInit(target, cand, { pv, pa }, emit) {
-    const classId = "research-v1";
-    const policy = SESSION_CLASSES[classId];
+  // One session-init proof: fresh ticket secrets, a fresh session nonce and a fresh slot, so a
+  // re-proof never reuses a nullifier or a signal. Returns the envelope line and what the book needs.
+  async _proveSessionInit(cand, classId, policy, { pv, pa }, emit) {
     const secrets = Array.from({ length: policy.tickets }, () => randomBytes(32));
     const built = buildTicketBook(secrets);
     const nonce = randomBytes(16).toString("hex");
@@ -1201,22 +1248,52 @@ export class ShadeTreeClient {
       proof: proved.proof, nullifier: proved.nullifier, externalNullifier: proved.externalNullifier, share: proved.share,
     };
     emit({ phase: "prove", status: "done", slot, nullifier: proved.nullifier, session: classId, artifact: artifactId });
-    const wire = JSON.stringify(envelope) + "\n";
+    return { built, nonce, epoch, slot, proved, artifactId, wire: JSON.stringify(envelope) + "\n" };
+  }
+
+  // Prove once to open a research-v1 book at `cand`, then spend its first ticket for `target`.
+  // The proof is made before the dial. A dial that runs through Tor retries can outlast the node's
+  // epoch window, so after the dial and BEFORE the envelope is written the proof's epoch is
+  // checked (sessionInitFresh). A stale proof is never sent: the unwritten socket is closed, the
+  // init proves again with a new slot and nonce, and dials again on the same SOCKS credential.
+  // The socket is not held open while proving, because the node's envelope deadline
+  // (SHADE_TREE_ENVELOPE_TIMEOUT_MS, 30 s from connect) is shorter than a cold proof.
+  async _sessionInit(target, cand, { pv, pa }, emit) {
+    const classId = "research-v1";
+    const policy = SESSION_CLASSES[classId];
+    let init = await this._proveSessionInit(cand, classId, policy, { pv, pa }, emit);
     // One SOCKS credential for the whole book: every ticket of this session rides the same Tor
     // circuit identity (the session is linkable to the node by design; no reason to spend circuits).
-    const socksAuth = this.socksIsolation ? socksAuthForTunnel(nonce) : null;
+    // A re-proof keeps it, so the second dial reuses the circuit the first dial just built.
+    const socksAuth = this.socksIsolation ? socksAuthForTunnel(init.nonce) : null;
     const sel = this.onion ? null : await this._sel();
-    emit({ phase: "session", status: "start", onion: cand.onion, class: classId });
     let sock;
-    try {
-      sock = await this._dial(cand.onion, this.dialAttempts, socksAuth);
-      sock.setNoDelay(true);
-    } catch (e) {
+    for (let reproves = 0; ; reproves++) {
+      emit({ phase: "session", status: "start", onion: cand.onion, class: classId });
+      try {
+        sock = await this._dial(cand.onion, this.dialAttempts, socksAuth);
+        sock.setNoDelay(true);
+      } catch (e) {
+        destroyRejectedSocket(sock);
+        sel?.reportResult?.(cand.onion, { ok: false });
+        emit({ phase: "session", status: "error", onion: cand.onion, error: e.message });
+        throw e;
+      }
+      const nowMs = this._now();
+      if (sessionInitFresh(init.epoch, nowMs)) break;
+      // The node is reachable; only the proof aged. Nothing was written, so nothing is spent at
+      // the node and its health is not touched.
       destroyRejectedSocket(sock);
-      sel?.reportResult?.(cand.onion, { ok: false });
-      emit({ phase: "session", status: "error", onion: cand.onion, error: e.message });
-      throw e;
+      const arrivalEpoch = sessionInitArrivalEpoch(nowMs);
+      emit({ phase: "session", status: "stale", onion: cand.onion, class: classId, proofEpoch: String(init.epoch), arrivalEpoch: String(arrivalEpoch), reproves });
+      if (reproves >= SESSION_INIT_MAX_REPROVES) {
+        const error = new ShadeTreeSessionInitStaleError({ proofEpoch: init.epoch, arrivalEpoch, reproves });
+        emit({ phase: "session", status: "error", onion: cand.onion, error: error.message, code: error.code });
+        throw error;
+      }
+      init = await this._proveSessionInit(cand, classId, policy, { pv, pa }, emit);
     }
+    const { built, nonce, slot, proved, artifactId, wire } = init;
     let ack;
     try {
       const frame = await exchangeGatewayAck(sock, wire, { timeoutMs: this.gatewayAckTimeoutMs, maxBytes: this.gatewayAckMaxBytes });
