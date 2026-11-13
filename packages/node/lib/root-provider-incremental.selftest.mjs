@@ -14,12 +14,18 @@
 //      contract counters, and with no counters either (empty word, reverted call, a PaidAccessSet
 //      without activeCount) it replays the full history instead of trusting the kept tree; a
 //      head-read RPC error or an undecodable head drops the kept tree;
-//   4. the gateway applies the snapshot its poll already read (one provider refresh per change).
+//   4. the kept tree's RAW root is checked against the contract's currentRoot() after every
+//      non-empty suffix and every full rebuild: a swapped-commitment register (which the counters
+//      cannot see) is rejected and rebuilt; an RPC that swaps it on every page never gets its root
+//      served (last-known-good, then fail closed); an empty set (leafCount 0) does not trip;
+//      a missing getter skips the check; garbage answers never parse as a root;
+//   5. the gateway applies the snapshot its poll already read (one provider refresh per change).
 //
 //   node packages/node/lib/root-provider-incremental.selftest.mjs
 
 import http from "node:http";
-import { reconstructGroup, NodeRootProvider, _internals } from "./root-provider.mjs";
+import { reconstructGroup, NodeRootProvider, contractCurrentRoot, _internals } from "./root-provider.mjs";
+import { newGroup } from "./rln.mjs";
 
 const { TOPIC, newReplayState, applyFreshSuffix, sortLogs, applyMemberLog } = _internals;
 
@@ -179,7 +185,10 @@ function fakeRpc({ logs, head }) {
   // `counters` shapes the eth_call answers: "ok" (both counters), "empty" (an empty word, as for
   // a contract without the function), "revert" (both calls revert), or "paid" (a PaidAccessSet:
   // nextIndex answers, activeCount reverts).
-  const state = { head, getLogs: [], methods: [], lie: null, failLogs: false, fork: 0, failHead: false, badHead: false, noHash: false, counters: "ok" };
+  // `root` shapes the currentRoot() answer: "ok" (the raw root over the true logs), "empty",
+  // "revert" (a contract without the getter) or "fail" (a transport-style RPC error);
+  // `rootCalls` counts the currentRoot() calls.
+  const state = { head, getLogs: [], methods: [], lie: null, failLogs: false, fork: 0, failHead: false, badHead: false, noHash: false, counters: "ok", root: "ok", rootCalls: 0 };
   const upTo = (n) => logs.filter((l) => Number(BigInt(l.blockNumber)) <= n);
   const srv = http.createServer((req, res) => {
     let body = "";
@@ -211,6 +220,14 @@ function fakeRpc({ logs, head }) {
         const r = reconstructGroup(upTo(Number(BigInt(j.params[1]))));
         const sel = j.params[0].data;
         const reverted = { code: -32000, message: "execution reverted" };
+        // currentRoot(): the contract's raw root over the TRUE logs (both set contracts have it).
+        if (sel === "0xfdab463d") {
+          state.rootCalls++;
+          if (state.root === "empty") return reply("0x");
+          if (state.root === "revert") return reply(null, reverted);
+          if (state.root === "fail") return reply(null, { code: -32000, message: "backend unavailable" });
+          return reply(word(r.group.root));
+        }
         if (state.counters === "empty") return reply("0x");
         if (state.counters === "revert") return reply(null, reverted);
         if (state.counters === "paid" && sel !== "0xfc7e9c6f") return reply(null, reverted);
@@ -381,6 +398,189 @@ async function provider() {
   }
 }
 
+// The kept tree's RAW root is checked against the contract's currentRoot() after every non-empty
+// suffix and after every full rebuild. Fixtures: a register with a swapped commitment (the counters
+// cannot see it), an RPC that swaps it on EVERY page (the rebuild reads the same lie), an empty set
+// (leafCount 0: the raw empty-tree root must match, not trip), a contract without the getter, and a
+// transport error on the call.
+// (bit 40 so the swapped value never collides with another small fixture commitment)
+const swapCommitment = (l) => ({ ...l, topics: [l.topics[0], word(BigInt(l.topics[1]) ^ (1n << 40n)), ...l.topics.slice(2)] });
+const isRegister = (l) => l.topics[0] === TOPIC.registeredV4 || l.topics[0] === TOPIC.inserted;
+const swapRegisters = (hit) => hit.map((l) => (isRegister(l) ? swapCommitment(l) : l));
+
+async function rootCheck() {
+  console.log("\nthe kept tree's raw root is checked against the contract currentRoot():");
+  const saved = { SHADE_TREE_FROM_BLOCK: process.env.SHADE_TREE_FROM_BLOCK, SHADE_TREE_FROM_BLOCKS: process.env.SHADE_TREE_FROM_BLOCKS, SHADE_TREE_CONFIRMATIONS: process.env.SHADE_TREE_CONFIRMATIONS, SHADE_TREE_LOGS_CHUNK: process.env.SHADE_TREE_LOGS_CHUNK, SHADE_TREE_RPC_RETRIES: process.env.SHADE_TREE_RPC_RETRIES };
+  process.env.SHADE_TREE_FROM_BLOCK = "0x0"; process.env.SHADE_TREE_LOGS_CHUNK = "10000"; process.env.SHADE_TREE_RPC_RETRIES = "0";
+  delete process.env.SHADE_TREE_FROM_BLOCKS; delete process.env.SHADE_TREE_CONFIRMATIONS;
+  const rpcs = [];
+  try {
+    // contractCurrentRoot parse surface: only one 32-byte word is a root; revert/empty/garbage is
+    // "no getter" (null); any other RPC error propagates.
+    {
+      const rpc = await fakeRpc({ logs: [reg(5, 0, 1)], head: 1 });
+      rpcs.push(rpc);
+      const truth = reconstructGroup([reg(5, 0, 1)]).group.root;
+      ok((await contractCurrentRoot(CONTRACT, "0x1", rpc.url)) === truth, "contractCurrentRoot reads the raw 32-byte word as a bigint");
+      for (const mode of ["empty", "revert"]) {
+        rpc.state.root = mode;
+        ok((await contractCurrentRoot(CONTRACT, "0x1", rpc.url)) === null, `contractCurrentRoot: ${mode} answer -> null (no getter, the check is skipped)`);
+      }
+      rpc.state.root = "fail";
+      let threw = null;
+      try { await contractCurrentRoot(CONTRACT, "0x1", rpc.url); } catch (e) { threw = e.message; }
+      ok(threw != null && /backend unavailable/.test(threw), "contractCurrentRoot: a non-revert RPC error propagates");
+      rpc.state.root = "ok";
+    }
+    for (const [name, answer] of [["short word", "0x12"], ["65 hex digits", "0x" + "1".repeat(65)], ["non-hex", "0x" + "z".repeat(64)], ["a number", 7], ["null", null], ["an object", { root: 1 }]]) {
+      const srv = http.createServer((req, res) => { let b = ""; req.on("data", (d) => { b += d; }); req.on("end", () => { const j = JSON.parse(b); res.setHeader("content-type", "application/json"); res.end(JSON.stringify({ jsonrpc: "2.0", id: j.id, result: answer })); }); });
+      await new Promise((r) => srv.listen(0, "127.0.0.1", r));
+      let got;
+      try { got = await contractCurrentRoot(CONTRACT, "0x1", `http://127.0.0.1:${srv.address().port}`); } catch (e) { got = `threw ${e.message}`; }
+      srv.close();
+      ok(got === null, `contractCurrentRoot: garbage answer (${name}) -> null, never a root`);
+    }
+
+    // A register whose commitment is swapped in the fresh page only. Index, counts and window all
+    // check out, so applyFreshSuffix accepts it; the root check rejects it and the full rebuild
+    // (honest pages) serves the oracle root.
+    {
+      const logs = [reg(101, 0, 1), reg(102, 1, 2), reg(103, 2, 3)];
+      const visible = logs.slice(0, 2);
+      const rpc = await fakeRpc({ logs: visible, head: 2 });
+      rpcs.push(rpc);
+      const oracle = () => reconstructGroup(visible.filter((l) => Number(BigInt(l.blockNumber)) <= rpc.state.head)).root;
+      const p = NodeRootProvider({ rpcUrl: rpc.url, contract: CONTRACT, freshnessMs: 3_600_000 });
+      const r0 = await p.currentRoots();
+      ok(r0.roots[0] === oracle() && p.stats().rootChecks === 1 && p.stats().rootMismatches === 0 && rpc.state.rootCalls === 1, "first full rebuild: one currentRoot() call, it matches");
+
+      // An empty suffix (head moved, no member event) and an unchanged head make no root call.
+      rpc.state.head = 3;
+      await p.currentRoots();
+      await p.currentRoots();
+      ok(rpc.state.rootCalls === 1, `an empty suffix and an unchanged head make no currentRoot() call (calls: ${rpc.state.rootCalls})`);
+
+      // Control: the counter-only check (applyFreshSuffix) accepts the swapped suffix.
+      {
+        const kept = stateFrom(visible);
+        const res = applyFreshSuffix(kept, [swapCommitment(reg(103, 2, 4))], { after: 3, upTo: 4, counters: countersOf(visible.concat([reg(103, 2, 4)])) });
+        ok(!res.reject && kept.group.root !== reconstructGroup(visible.concat([reg(103, 2, 4)])).group.root, "control: the counter check alone ACCEPTS a swapped-commitment register (wrong root)");
+      }
+
+      visible.push({ ...logs[2], blockNumber: hex(4) });
+      rpc.state.head = 4;
+      rpc.state.lie = (from, to, hit) => (from > 0 ? swapRegisters(hit) : hit);
+      const scansBefore = rpc.state.getLogs.filter(([from]) => from === 0).length;
+      const r1 = await p.currentRoots();
+      const st = p.stats();
+      ok(r1.roots[0] === oracle() && !r1.stale && r1.roots.length === 1 && st.rootMismatches === 1 && st.fullRebuilds === 2 && /currentRoot\(\)/.test(st.lastRejection) && rpc.state.getLogs.filter(([from]) => from === 0).length === scansBefore + 1,
+        `swapped commitment in the fresh page -> refused (${st.lastRejection}) -> full rebuild, oracle root, ring reset`);
+      ok(rpc.state.rootCalls === 3, `that poll made two currentRoot() calls: the suffix check and the rebuild check (total ${rpc.state.rootCalls})`);
+      rpc.state.lie = null;
+
+      // One honest register: exactly one root call for the non-empty suffix, applied incrementally.
+      visible.push(reg(104, 3, 5));
+      rpc.state.head = 5;
+      const applies = p.stats().suffixApplies;
+      const r2 = await p.currentRoots();
+      ok(r2.roots[0] === oracle() && p.stats().suffixApplies === applies + 1 && rpc.state.rootCalls === 4 && p.stats().rootMismatches === 1, "an honest non-empty suffix: exactly one currentRoot() call, it matches, kept tree extended");
+
+      // A contract without the getter (empty word, reverted call): the check is skipped, not tripped.
+      for (const mode of ["empty", "revert"]) {
+        rpc.state.root = mode;
+        visible.push(reg(105 + rpc.state.head, reconstructGroup(visible).group.members.length, rpc.state.head + 1));
+        rpc.state.head += 1;
+        const skips = p.stats().rootCheckSkips;
+        const a = p.stats().suffixApplies;
+        const r = await p.currentRoots();
+        ok(r.roots[0] === oracle() && !r.stale && p.stats().rootCheckSkips === skips + 1 && p.stats().suffixApplies === a + 1 && p.stats().rootMismatches === 1, `currentRoot() ${mode} -> check skipped (no getter), suffix applied, oracle root`);
+      }
+
+      // A transport-style error on the root call propagates like any RPC error: last-known-good
+      // now (stale), and the next successful refresh is a full rebuild.
+      rpc.state.root = "fail";
+      visible.push(reg(999, reconstructGroup(visible).group.members.length, rpc.state.head + 1));
+      const lkg = oracle();
+      rpc.state.head += 1;
+      const rFail = await p.currentRoots();
+      rpc.state.root = "ok";
+      const fb = p.stats().fullRebuilds;
+      const rBack = await p.currentRoots();
+      ok(rFail.stale === true && rFail.roots[0] === lkg && rBack.roots[0] === oracle() && !rBack.stale && p.stats().fullRebuilds === fb + 1, "a transport error on currentRoot() serves last-known-good now and the next refresh is a full rebuild");
+    }
+
+    // An RPC that swaps the commitment on EVERY page, the full-history pages included. The rebuild
+    // reads the same lie and the counters still agree, so without the rebuild check the provider
+    // would serve the wrong root. With it: never the wrong root; last-known-good (the previous
+    // verified current root, stale) for at most F, then no roots at all (fail closed).
+    {
+      const visible = [reg(201, 0, 1), reg(202, 1, 2)];
+      const rpc = await fakeRpc({ logs: visible, head: 2 });
+      rpcs.push(rpc);
+      let clock = 1_000_000;
+      const p = NodeRootProvider({ rpcUrl: rpc.url, contract: CONTRACT, freshnessMs: 60_000, now: () => clock });
+      const verified = (await p.currentRoots()).roots[0];
+      visible.push(reg(203, 2, 3));
+      rpc.state.head = 3;
+      rpc.state.lie = (from, to, hit) => swapRegisters(hit);
+      // Any served root other than the last verified one and the true current one is a wrong root.
+      const trueRoot = reconstructGroup(visible).root;
+      const servedWrong = [];
+      let staleServes = 0;
+      for (let i = 0; i < 5; i++) {
+        clock += 12_000;
+        let r;
+        try { r = await p.currentRoots(); } catch { r = { roots: [] }; }
+        if (r.roots.some((x) => x !== verified && x !== trueRoot)) servedWrong.push(i);
+        if (r.stale === true && r.roots.length === 1 && r.roots[0] === verified) staleServes++;
+      }
+      ok(servedWrong.length === 0 && staleServes === 5 && /full replay root disagrees/.test(p.stats().lastRejection),
+        `every page lies: ${servedWrong.length}/5 polls served the wrong root, ${staleServes}/5 served last-known-good (${p.stats().lastRejection})`);
+      clock += 12_001; // 60 001 ms after the last verified read: past F
+      let failedClosed = null;
+      try { const r = await p.currentRoots(); failedClosed = `served ${JSON.stringify(r.roots)}`; } catch (e) { failedClosed = e.message; }
+      ok(/full replay root disagrees/.test(failedClosed), "every page lies, past F: the refresh throws (no roots served, fail closed)");
+      // The same lie with no last-known-good at all (a fresh provider): fails closed at once.
+      const p2 = NodeRootProvider({ rpcUrl: rpc.url, contract: CONTRACT, freshnessMs: 60_000 });
+      let first = null;
+      try { await p2.currentRoots(); first = "served"; } catch (e) { first = e.message; }
+      ok(/full replay root disagrees/.test(first), "every page lies, no last-known-good: the first refresh throws");
+      rpc.state.lie = null;
+      clock += 12_000;
+      const rOk = await p.currentRoots();
+      ok(rOk.roots[0] === reconstructGroup(visible).root && !rOk.stale, "the RPC stops lying -> the next refresh serves the oracle root");
+    }
+
+    // Empty set (leafCount 0): every member left. The raw tree root is the depth-20 empty-tree
+    // root, which is what the contract holds; the check must pass on the suffix that empties the
+    // set and on a full rebuild of an empty set. roots[0] at that point is the superseded root
+    // (still inside F), which is why the check never compares roots[0] or the null-mapped root.
+    {
+      const visible = [reg(301, 0, 1), reg(302, 1, 2)];
+      const rpc = await fakeRpc({ logs: visible, head: 2 });
+      rpcs.push(rpc);
+      const p = NodeRootProvider({ rpcUrl: rpc.url, contract: CONTRACT, freshnessMs: 3_600_000 });
+      const before = await p.currentRoots();
+      visible.push(rm(TOPIC.exiting, 301, 3), rm(TOPIC.withdrawn, 302, 4));
+      rpc.state.head = 4;
+      let r;
+      try { r = await p.currentRoots(); } catch (e) { r = { roots: [], error: e.message }; }
+      const chainEmpty = await contractCurrentRoot(CONTRACT, "0x4", rpc.url);
+      ok(r.leafCount === 0 && p.stats().rootMismatches === 0 && p.stats().suffixApplies === 1 && p.stats().fullRebuilds === 1 && !r.stale,
+        "the suffix that empties the set (leafCount 0) passes the raw root check: no trip, no rebuild");
+      ok(chainEmpty === newGroup().root && r.roots.length >= 1 && r.roots.includes(before.roots[0]) && r.roots.every((x) => BigInt(x) !== chainEmpty),
+        "at leafCount 0 roots[0] is the superseded root and differs from currentRoot() (the trap a roots[0] compare falls into)");
+      const p2 = NodeRootProvider({ rpcUrl: rpc.url, contract: CONTRACT, freshnessMs: 3_600_000 });
+      let r2;
+      try { r2 = await p2.currentRoots(); } catch (e) { r2 = { error: e.message }; }
+      ok(r2.leafCount === 0 && r2.roots.length === 0 && p2.stats().rootChecks === 1 && p2.stats().rootMismatches === 0, "a full rebuild of an empty set passes the raw root check (no throw, no roots)");
+    }
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    for (const rpc of rpcs) rpc.close();
+  }
+}
+
 async function gatewaySingleRead() {
   console.log("\ngateway poll applies the snapshot it already read:");
   const { initRoots, _getRecentRoots, _setRecentRoots } = await import("../gateway/gateway.mjs");
@@ -415,6 +615,7 @@ async function gatewaySingleRead() {
 equivalence();
 adversarial();
 await provider();
+await rootCheck();
 await gatewaySingleRead();
 console.log(`\n${failures === 0 ? "PASS" : "FAIL"}: root-provider incremental selftest (${failures} failure${failures === 1 ? "" : "s"})`);
 process.exit(failures === 0 ? 0 : 1);

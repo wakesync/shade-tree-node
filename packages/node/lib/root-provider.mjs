@@ -280,13 +280,32 @@ export function NodeRootProvider({
   // refresh propagates (head read included) drops the kept tree too: that refresh serves
   // last-known-good (withCache) and the NEXT successful refresh is the full rebuild. A reverted
   // or empty counter call is not such an error (contractCounters returns null for it).
+  // After a non-empty suffix and after a full rebuild the tree's raw root is also compared with
+  // the contract's currentRoot() (treeMatchesContractRoot below).
   // head-N reads (SHADE_TREE_CONFIRMATIONS>0) always rebuild (a reorg deeper than N would
   // otherwise stick).
   let scanned = null; // { to: number, hash: string|null, state: { group, liveIndex, active } }
   let lastSuccessfulAt = null;
   // Counters for tests and debugging: how often the tree was rebuilt from the full history vs
   // extended by a fresh suffix, and why the last suffix was refused (null if none was).
-  const stats = { fullRebuilds: 0, suffixApplies: 0, lastRejection: null };
+  // rootChecks / rootMismatches / rootCheckSkips count the currentRoot() comparisons below.
+  const stats = { fullRebuilds: 0, suffixApplies: 0, lastRejection: null, rootChecks: 0, rootMismatches: 0, rootCheckSkips: 0 };
+
+  // The counters (nextIndex / activeCount) cannot see a register whose COMMITMENT is wrong: every
+  // count and index still matches, and the tree just holds a leaf nobody can prove for, plus a
+  // root no other node serves. So after every non-empty suffix and after every full rebuild the
+  // replayed tree's RAW root (`group.root`, defined for an empty set too) is compared with the
+  // contract's `currentRoot()` at the same block. Not stateRoot(), which maps an empty set to null,
+  // and not roots[0], which after the last member leaves is a superseded root still inside F.
+  // A reverted or empty answer (no getter) skips the check (rootCheckSkips) instead of tripping.
+  async function treeMatchesContractRoot(st, block) {
+    const onChain = await contractCurrentRoot(addr, block, rpcUrl);
+    if (onChain == null) { stats.rootCheckSkips++; return true; }
+    stats.rootChecks++;
+    if (onChain === BigInt(st.group.root)) return true;
+    stats.rootMismatches++;
+    return false;
+  }
 
   const currentRoots = withCache(async () => {
     const refreshStartedAt = now();
@@ -356,6 +375,11 @@ export function NodeRootProvider({
         if (applied.reject) {
           stats.lastRejection = applied.reject;
           incremental = false; // fall through to the full rebuild below
+        } else if (fresh.length > 0 && !(await treeMatchesContractRoot(scanned.state, toBlock))) {
+          // A register with a swapped commitment passes every check above. Only the contract's
+          // own root sees it: drop the kept tree (already mutated) and rebuild from the start.
+          stats.lastRejection = `kept tree root disagrees with the contract currentRoot() at block ${observedAtBlock}`;
+          incremental = false;
         } else {
           stats.suffixApplies++;
           transitions = applied.transitions;
@@ -377,6 +401,14 @@ export function NodeRootProvider({
         });
         state = { group: replay.group, liveIndex: replay.liveIndex, active: replay.active };
         stats.fullRebuilds++;
+        // The full replay gets the same check, and fails closed: an RPC that lies on every page
+        // (not only the fresh suffix) rebuilds the same wrong tree, so a rebuild alone would serve
+        // it. Throwing drops the kept tree; withCache serves last-known-good (the last verified
+        // current root, flagged stale) for at most F, then this source serves no roots.
+        if (!(await treeMatchesContractRoot(state, toBlock))) {
+          stats.lastRejection = `full replay root disagrees with the contract currentRoot() at block ${observedAtBlock}`;
+          throw new Error(`NodeRootProvider: ${stats.lastRejection} (RPC ${rpcOriginForError(rpcUrl)})`);
+        }
         keptTreeConfirmed = uncheckedKept != null && stateRoot(state) === uncheckedKept.root && state.active === uncheckedKept.active;
       }
     } catch (e) {
@@ -545,6 +577,26 @@ export async function loadGroupFromContract({ contract, rpcUrl = RPC_URL(), from
 // the history. PaidAccessSet has no counters: the check is skipped when the calls return no word.
 const NEXT_INDEX_SELECTOR = "0xfc7e9c6f";   // nextIndex()
 const ACTIVE_COUNT_SELECTOR = "0x4331ed1f"; // activeCount()
+const CURRENT_ROOT_SELECTOR = "0xfdab463d"; // currentRoot()
+
+// contractCurrentRoot(contract, block, rpcUrl) -> bigint | null: the set's own `currentRoot()` at
+// `block`, as the RAW word. Both StakedReputationSet and PaidAccessSet keep it in storage and
+// recompute it on every register and removal, so it is the root the contract itself holds. It is
+// NOT mapped to null for an empty set: with every leaf vacated the contract holds the depth-20
+// all-zero-leaf root, which is what the replayed tree's raw `group.root` is too. A reverted call or
+// an answer that is not one 32-byte word (a contract without the getter) is null; a transport or
+// other RPC error propagates like any other RPC error.
+export async function contractCurrentRoot(contract, block, rpcUrl = RPC_URL()) {
+  let word;
+  try {
+    word = await rpc("eth_call", [{ to: contract, data: CURRENT_ROOT_SELECTOR }, block], rpcUrl);
+  } catch (e) {
+    if (/revert/i.test(String((e && e.message) || e))) return null;
+    throw e;
+  }
+  if (typeof word !== "string" || !/^0x[0-9a-fA-F]{64}$/.test(word)) return null;
+  return BigInt(word);
+}
 
 export async function contractCounters(contract, block, rpcUrl = RPC_URL()) {
   const values = [];

@@ -334,7 +334,13 @@ and apply new blocks afterwards (a fresh page that fails its checks, or a finali
 hash changed at the same height, means a full counter-checked rebuild from the start block; with
 no block hash the same-height poll checks the contract counters, and with no counters either it
 rebuilds; an RPC error serves last-known-good for that refresh and the next successful refresh
-rebuilds). A poll that detects a root change hands its
+rebuilds). The counters cannot see a register whose commitment is wrong, so after every non-empty
+fresh suffix the replayed tree's raw root is also compared with the contract's `currentRoot()` at
+the same block (a mismatch rebuilds), and after every full rebuild too (a mismatch throws: that
+refresh serves last-known-good, and past F the source serves no roots). The raw tree root is
+compared, never the newest served root and never a null-mapped empty set: with every leaf vacated
+the contract holds the depth-20 empty-tree root, and the newest served root is then a superseded
+one still inside F. A reverted or empty `currentRoot()` answer skips the check. A poll that detects a root change hands its
 snapshot to the gateway, so the change costs one refresh, not two. The gateway fails SOFT at startup when the chain is unreadable but
 `members.json` gives a root (`shade_tree_gateway_root_source_degraded`), and closed when nothing would be
 trusted. `docs/OPERATOR.md` "Public RPC log-range caps"; `docs/CONFIG.md`.

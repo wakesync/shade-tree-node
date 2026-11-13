@@ -827,6 +827,15 @@ Since that night the gateway does three things on its own (`packages/node/lib/ro
   set pays the full rebuild on each poll the finalized head does not move. An RPC error the
   refresh propagates (head read included) drops the kept tree: that refresh serves the
   last-known-good roots, and the next successful refresh is the full rebuild.
+- **Checks the tree against the contract's root.** After every fresh page that carries member
+  events, and after every full rebuild, the provider makes one `currentRoot()` `eth_call` at the
+  same block and compares it with the replayed tree's root. That costs one call per membership
+  change, not one per poll (an unchanged or event-free head makes none). A mismatch on the fresh
+  page drops the kept tree and rebuilds; a mismatch after a full rebuild fails the refresh: the
+  gateway serves its last verified root (stale) for up to F, then no on-chain roots from that
+  source until the RPC's logs and its `currentRoot()` agree again. `stats().rootMismatches` counts
+  them and `stats().lastRejection` names the block. A contract without the getter (a reverted or
+  empty answer) skips the check; a transport error on it is handled like any other RPC error.
 - **Starts at the deploy block.** Each contract's scan starts at its own deploy block from a
   committed network record's `deployBlocks`, including when the box pins
   `SHADE_TREE_GROUP_CONTRACT` / `SHADE_TREE_PAID_ACCESS_CONTRACT` by hand. Historical records

@@ -97,7 +97,11 @@ default settings — that is an operator config. The **onion is never on chain**
 (`contracts/GatewayRegistry.sol`): only an operator *address* stakes, so the fleet stays
 un-enumerable and one stake can rotate across many onions.
 *Lever: the RPC lies about the admission root.* With `SHADE_TREE_ROOT_PROVIDER=node` the RPC is
-trusted for the root outright (event reconstruction; the solo-staker's own node). With
+trusted for the root outright (event reconstruction; the solo-staker's own node). The node provider
+does cross-check its replayed tree against the contract's own `currentRoot()` (one `eth_call` after
+every non-empty fresh suffix and after every full rebuild, which fails closed on a mismatch), so an
+RPC whose logs disagree with its own state is caught; an RPC that lies consistently about both the
+logs and `currentRoot()` is not. With
 `SHADE_TREE_ROOT_PROVIDER=light` the root's slot **value** is proven by EIP-1186 proofs, so the only
 remaining lie is the block `stateRoot` the proof is anchored to (a fake header + a proof
 consistent with it admits the attacker's tree). **That lever is closed when `SHADE_TREE_HELIOS_RPC_URL`

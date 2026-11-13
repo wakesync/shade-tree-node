@@ -26,6 +26,14 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
   read the provider again, which was a second full rebuild on every membership change.
 - `onChange` callbacks get the snapshot as a third argument (`cb(roots, error, snapshot)`);
   `loadGroupOnchain(provider, snapshot)` uses it when given.
+- The kept tree is checked against the contract's own root. A register whose commitment is wrong
+  passes every count and index check, so after every fresh page with member events, and after
+  every full rebuild, the provider reads `currentRoot()` at the same block (one `eth_call`) and
+  compares it with the replayed tree's raw root. A mismatch on a fresh page rebuilds from the start
+  block; a mismatch after a full rebuild fails the refresh, so an RPC that returns the wrong
+  commitment on every page gets last-known-good for up to F and then no roots, never its root. An
+  empty set is compared as the contract holds it (the empty-tree root), so it does not trip. A
+  reverted or empty answer skips the check. New export: `contractCurrentRoot(contract, block, rpcUrl)`.
 
 ### Get access page: the terminal path is the keyless command
 
