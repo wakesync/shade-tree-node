@@ -4,6 +4,18 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### Bench: RLN v4 proof and verify timing, JS path (part of #63)
+
+- `bench/rln/prove-verify.mjs` times `proveForSlot` and `verifyEnvelope` with the real circuit
+  artifacts on an in-memory group of ephemeral members, and writes one JSON result (commit,
+  artifact id, K, Node, hardware class, cold call and warm p50/p95) or a markdown row per result.
+  Every proof it makes is verified (`--verify` below `--prove` is refused). It does not collect
+  the hostname, kernel release or output directory; `--label` and the `--out` file name are
+  recorded as given. See `bench/README.md`.
+- Its selftest runs in the slow lane (real proofs). Bench code is not in the coverage gate.
+- Does not close #63: the Rust prover, Tor round-trip, gateway saturation and a published table
+  are still open. No results are committed.
+
 ### Get access page: the terminal path is the keyless command
 
 - The Get access page and the agent brief on the landing page now show
