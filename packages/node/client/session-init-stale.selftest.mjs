@@ -159,8 +159,9 @@ await test("control: a 31 s proof and a 3.5 s dial open the book with one proof 
 });
 
 await test("first SOCKS attempt times out at 120 s: the stale proof is never sent, one re-proof opens the book", async () => {
-  // Measured shape: a 31 s proof, then a TTLExpired after about 120 s, the 3 s pause, and a
-  // second attempt that connects. Without the check the init reaches the node 2 epochs late.
+  // Illustrative simulation (fake clock): a 31 s proof, then a SOCKS attempt that runs out its
+  // 120 s timeout, the 3 s pause, and a second attempt that connects. Without the check the init
+  // reaches the node 2 epochs late.
   const h = harness({ startMs: epochStart(E0), dialAttempts: 4, dials: [{ ms: 120_000 + 3_000, fail: true }, { ms: 3_000 }, { ms: 3_000 }] });
   const t = await h.connect();
   assert.equal(h.proofs.length, 2, "one re-proof");
@@ -183,8 +184,12 @@ await test("first SOCKS attempt times out at 120 s: the stale proof is never sen
   t.destroy();
 });
 
-await test("no SOCKS failure, just a slow dial: a 33 s proof started 30 s into an epoch and a 57 s dial re-prove", async () => {
-  // The shape of one natural refusal in our measurement: 33.3 s proof, 57.2 s dial, 2 epochs late.
+await test("no SOCKS failure, just a slow dial: a 33.3 s proof started 30 s into an epoch and a 57.2 s dial re-prove", async () => {
+  // Illustrative simulation, not a replay of a measurement. It is loosely modelled on one natural
+  // refusal we recorded: a prove:start to prove:done span of 33.3 s that began 32.0 s into its
+  // epoch, a single SOCKS dial of 56.6 s, and 57.2 s from session start to the refusal, which
+  // came 2 epochs after the epoch at prove:start. Here the fake dialer charges the whole 57.2 s
+  // to the dial and the proof starts at +30 s.
   const h = harness({ startMs: epochStart(E0) + 30_000, proveMs: [33_300, 2_000], dials: [{ ms: 57_200 }, { ms: 3_000 }] });
   const t = await h.connect();
   assert.equal(h.proofs.length, 2);
@@ -308,6 +313,55 @@ await test("garbage never throws and fails closed (stale => prove again, never s
   for (const marginMs of [-5_000, NaN, "abc", undefined]) {
     assert.equal(sessionInitFresh(E0, t, { marginMs }), true, "a bad margin falls back to no margin, never to a wider window");
   }
+});
+
+await test("option values that cannot be converted never throw: Symbol epoch length and margin, null options", () => {
+  const t = epochStart(E0) + 1_000;
+  let r;
+  assert.doesNotThrow(() => { r = sessionInitFresh(E0, t, { epochSeconds: Symbol("e") }); });
+  assert.equal(r, false, "an unreadable epoch length fails closed");
+  assert.doesNotThrow(() => { r = sessionInitArrivalEpoch(t, { epochSeconds: Symbol("e") }); });
+  assert.equal(r, null);
+  const throwing = { valueOf() { throw new Error("no"); } };
+  assert.equal(sessionInitFresh(E0, t, { epochSeconds: throwing }), false);
+  // A margin that cannot be read is no margin: same answer as marginMs 0, never a wider window.
+  for (const marginMs of [Symbol("m"), throwing]) {
+    assert.doesNotThrow(() => { r = sessionInitFresh(E0, t, { marginMs }); });
+    assert.equal(r, true);
+    assert.equal(sessionInitArrivalEpoch(epochStart(E0 + 1n) - 1, { marginMs }), E0, "no margin at all");
+  }
+  // null options means defaults, like no options.
+  assert.doesNotThrow(() => { r = sessionInitFresh(E0, t, null); });
+  assert.equal(r, sessionInitFresh(E0, t));
+  assert.equal(sessionInitArrivalEpoch(t, null), sessionInitArrivalEpoch(t));
+  const edge = epochStart(E0 + 2n) - SESSION_INIT_TRANSIT_MARGIN_MS;
+  assert.equal(sessionInitFresh(E0, edge, null), false, "null options still apply the default margin");
+  const getterThrows = { get epochSeconds() { throw new Error("no"); } };
+  assert.doesNotThrow(() => { r = sessionInitFresh(E0, t, getterThrows); });
+  assert.equal(r, false);
+});
+
+await test("a finite clock with a tiny positive epoch length (quotient overflow) fails closed instead of throwing", () => {
+  let r;
+  assert.doesNotThrow(() => { r = sessionInitArrivalEpoch(Number.MAX_VALUE, { epochSeconds: Number.MIN_VALUE }); });
+  assert.equal(r, null, "Infinity quotient");
+  assert.doesNotThrow(() => { r = sessionInitFresh(E0, Number.MAX_VALUE, { epochSeconds: Number.MIN_VALUE }); });
+  assert.equal(r, false);
+  // Finite but beyond the safe-integer range: the epoch would be imprecise, so it is not used.
+  assert.equal(sessionInitArrivalEpoch(1e300, { epochSeconds: 60 }), null);
+  assert.equal(sessionInitFresh(E0, 1e300, { epochSeconds: 60 }), false);
+});
+
+await test("a +Infinity margin is no margin at an epoch boundary, not a capped quarter-epoch margin", () => {
+  // 60 s epochs. 170 s is 10 s before the start of epoch 3: with no margin the arrival epoch is 2,
+  // so a proof from epoch 1 is fresh. A capped 15 s margin would push arrival into epoch 3.
+  const at = 170_000;
+  assert.equal(sessionInitFresh(1n, at, { epochSeconds: 60, marginMs: 0 }), true);
+  assert.equal(sessionInitFresh(1n, at, { epochSeconds: 60, marginMs: Infinity }), true);
+  assert.equal(sessionInitArrivalEpoch(at, { epochSeconds: 60, marginMs: Infinity }), 2n);
+  assert.equal(sessionInitArrivalEpoch(at, { epochSeconds: 60, marginMs: -Infinity }), 2n);
+  // The valid default margin still moves the boundary there.
+  assert.equal(sessionInitFresh(1n, at, { epochSeconds: 60 }), false);
 });
 
 rmSync(work, { recursive: true, force: true });

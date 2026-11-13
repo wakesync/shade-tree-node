@@ -358,19 +358,47 @@ export const SESSION_INIT_TRANSIT_MARGIN_MS = 15_000;
 // reached in time.
 export const SESSION_INIT_MAX_REPROVES = 1;
 
+// A finite number from an option value, or NaN. Never throws (a Symbol or an object whose
+// valueOf throws is NaN).
+function finiteOption(value) {
+  let n;
+  try { n = Number(value); } catch { return NaN; }
+  return Number.isFinite(n) ? n : NaN;
+}
+
 // The epoch a session init written at `nowMs` is expected to reach the node in (transit margin
-// included). Pure; exported for the selftest.
-export function sessionInitArrivalEpoch(nowMs, { epochSeconds = clientEpochSeconds(), marginMs = SESSION_INIT_TRANSIT_MARGIN_MS } = {}) {
-  const epochMs = Number(epochSeconds) * 1000;
-  if (!Number.isFinite(epochMs) || epochMs <= 0 || !Number.isFinite(nowMs)) return null;
-  const margin = Math.max(0, Math.min(Number(marginMs) || 0, Math.floor(epochMs / 4)));
-  return BigInt(Math.floor((nowMs + margin) / epochMs));
+// included), or null when it cannot be computed. Pure; exported for the selftest. Never throws.
+// `options` may be omitted or null (defaults). `nowMs` must be a finite number. `epochSeconds`
+// must convert to a finite positive number, else null. A `marginMs` that is missing uses the
+// default; one that does not convert to a finite non-negative number (NaN, Infinity, a Symbol,
+// a negative value) counts as no margin, never as a wider one. The margin is capped at a quarter
+// epoch. A quotient that is not a safe integer (an overflow from a tiny epoch length or a huge
+// clock) is null too.
+export function sessionInitArrivalEpoch(nowMs, options) {
+  let epochSecondsIn;
+  let marginIn;
+  try {
+    epochSecondsIn = options?.epochSeconds;
+    marginIn = options?.marginMs;
+  } catch {
+    return null; // an options object whose getters throw: cannot read it, fail closed
+  }
+  if (typeof nowMs !== "number" || !Number.isFinite(nowMs)) return null;
+  const epochMs = finiteOption(epochSecondsIn === undefined ? clientEpochSeconds() : epochSecondsIn) * 1000;
+  if (!Number.isFinite(epochMs) || epochMs <= 0) return null;
+  let margin = marginIn === undefined ? SESSION_INIT_TRANSIT_MARGIN_MS : finiteOption(marginIn);
+  if (!(margin > 0)) margin = 0; // NaN and negative values: no margin
+  margin = Math.min(margin, Math.floor(epochMs / 4));
+  const quotient = Math.floor((nowMs + margin) / epochMs);
+  if (!Number.isSafeInteger(quotient)) return null;
+  return BigInt(quotient);
 }
 
 // Will a session init proved in `proofEpoch` still pass the node's freshness rule (current or
-// previous epoch) if it is written at `nowMs`? Pure; exported for the selftest.
-// Fails closed: an epoch or clock it cannot read counts as stale (the caller proves again).
-export function sessionInitFresh(proofEpoch, nowMs, options = {}) {
+// previous epoch) if it is written at `nowMs`? Pure; exported for the selftest. Never throws.
+// Fails closed: an epoch, clock or epoch length it cannot read counts as stale (the caller proves
+// again). Options as for sessionInitArrivalEpoch.
+export function sessionInitFresh(proofEpoch, nowMs, options) {
   let epoch;
   try { epoch = BigInt(proofEpoch); } catch { return false; }
   const arrival = sessionInitArrivalEpoch(nowMs, options);
