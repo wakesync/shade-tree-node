@@ -14,10 +14,14 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 - A fresh page is checked before it touches the kept tree: a reorged, duplicated or out-of-range
   log, a leaf index that is not the next slot, or a result that disagrees with the contract's
   `nextIndex` / `activeCount` is refused, and that refresh rebuilds from the start block (counter
-  checked, as before). A finalized block at the same height with a different hash also rebuilds;
-  if the RPC returns no block hash, the same-height poll checks the contract counters instead.
-- An RPC error anywhere in a refresh (the head read included) drops the kept tree. That refresh
-  serves the last-known-good roots; the next successful refresh is the full rebuild.
+  checked, as before). A finalized block at the same height with a different hash also rebuilds.
+  If the RPC returns no block hash, the same-height poll checks the contract counters instead; if
+  the counters cannot be read either (a PaidAccessSet, which has no `activeCount`, an empty word,
+  or a reverted call), that poll rebuilds from the start block, because absent counters check
+  nothing. Before this release such a poll kept serving its old root.
+- An RPC error that a refresh propagates (the head read included) drops the kept tree. That
+  refresh serves the last-known-good roots; the next successful refresh is the full rebuild. A
+  reverted or empty counter call is not such an error: it reads as "no counters".
 - A poll that detects a root change now hands its snapshot to the gateway. The gateway used to
   read the provider again, which was a second full rebuild on every membership change.
 - `onChange` callbacks get the snapshot as a third argument (`cb(roots, error, snapshot)`);

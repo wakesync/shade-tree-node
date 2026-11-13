@@ -11,7 +11,9 @@
 //      back to a full counter-checked rebuild from the start block, and the root always equals the
 //      oracle; a finalized block at the SAME height with a different hash (an RPC view change that
 //      carries a removal) is not served from the kept tree; a hashless head falls back to the
-//      contract counters; a head-read RPC error or an undecodable head drops the kept tree;
+//      contract counters, and with no counters either (empty word, reverted call, a PaidAccessSet
+//      without activeCount) it replays the full history instead of trusting the kept tree; a
+//      head-read RPC error or an undecodable head drops the kept tree;
 //   4. the gateway applies the snapshot its poll already read (one provider refresh per change).
 //
 //   node packages/node/lib/root-provider-incremental.selftest.mjs
@@ -174,7 +176,10 @@ function fakeRpc({ logs, head }) {
   // `fork` names the RPC's current view of the chain: the block hash is a function of (fork,
   // height), so bumping it changes the hash of an already-seen height. `failHead` makes the head
   // read error out, `badHead` returns an undecodable block number, `noHash` omits the hash.
-  const state = { head, getLogs: [], methods: [], lie: null, failLogs: false, fork: 0, failHead: false, badHead: false, noHash: false };
+  // `counters` shapes the eth_call answers: "ok" (both counters), "empty" (an empty word, as for
+  // a contract without the function), "revert" (both calls revert), or "paid" (a PaidAccessSet:
+  // nextIndex answers, activeCount reverts).
+  const state = { head, getLogs: [], methods: [], lie: null, failLogs: false, fork: 0, failHead: false, badHead: false, noHash: false, counters: "ok" };
   const upTo = (n) => logs.filter((l) => Number(BigInt(l.blockNumber)) <= n);
   const srv = http.createServer((req, res) => {
     let body = "";
@@ -205,6 +210,10 @@ function fakeRpc({ logs, head }) {
       if (j.method === "eth_call") {
         const r = reconstructGroup(upTo(Number(BigInt(j.params[1]))));
         const sel = j.params[0].data;
+        const reverted = { code: -32000, message: "execution reverted" };
+        if (state.counters === "empty") return reply("0x");
+        if (state.counters === "revert") return reply(null, reverted);
+        if (state.counters === "paid" && sel !== "0xfc7e9c6f") return reply(null, reverted);
         return reply(word(sel === "0xfc7e9c6f" ? r.group.members.length : r.active));
       }
       reply(null);
@@ -311,6 +320,37 @@ async function provider() {
         "hashless head at the same height, a removal the kept tree lacks -> counters disagree -> full rebuild, oracle root");
       rpc.state.noHash = false;
       await p.currentRoots(); // re-learn the hash (changed from null: counter path again, agrees)
+    }
+
+    // A hashless head at the same height where the counters are unavailable too: an empty word,
+    // a reverted call, or a PaidAccessSet (nextIndex answers, activeCount does not). Nothing then
+    // checks the kept tree, so the poll replays the full history. Before this check, such a poll
+    // kept serving a root whose member had been removed at that height, with no stale flag.
+    {
+      for (const mode of ["empty", "revert", "paid"]) {
+        // A normal hashed poll that adds a member first, so the ring holds two roots and a
+        // needless ring reset on the unchanged poll below would show.
+        rpc.state.noHash = false;
+        rpc.state.counters = "ok";
+        visible.push(reg(464646 + rpc.state.head, reconstructGroup(visible).group.members.length, rpc.state.head + 1));
+        rpc.state.head += 1;
+        const before = await p.currentRoots();
+        rpc.state.noHash = true;
+        rpc.state.counters = mode;
+        const scansBefore = fullScans();
+        const rNoChange = await p.currentRoots();
+        ok(rNoChange.roots[0] === oracle() && fullScans() === scansBefore + 1 && before.roots.length >= 2 && JSON.stringify(rNoChange.roots) === JSON.stringify(before.roots) && !rNoChange.stale,
+          `hashless head, counters unavailable (${mode}), nothing changed -> full replay (${p.stats().lastRejection}), same root, ring of ${rNoChange.roots.length} kept`);
+        const keptRoot = rNoChange.roots[0];
+        const victim = [...reconstructGroup(visible).liveIndex.keys()][0];
+        visible.push(rm(TOPIC.exiting, BigInt(victim), rpc.state.head, 20 + ["empty", "revert", "paid"].indexOf(mode)));
+        const rRemoved = await p.currentRoots();
+        ok(rRemoved.roots[0] === oracle() && rRemoved.roots[0] !== keptRoot && !rRemoved.roots.includes(keptRoot) && rRemoved.leafCount === reconstructGroup(visible).active && fullScans() === scansBefore + 2 && !rRemoved.stale,
+          `hashless head, counters unavailable (${mode}), a removal at that height -> full replay, oracle root, the removed member's root is no longer served (ring reset)`);
+      }
+      rpc.state.counters = "ok";
+      rpc.state.noHash = false;
+      await p.currentRoots(); // re-learn the hash
     }
 
     // A head-read RPC error: that refresh serves last-known-good, the kept tree is dropped, and

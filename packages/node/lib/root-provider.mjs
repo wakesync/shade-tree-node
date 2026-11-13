@@ -273,10 +273,15 @@ export function NodeRootProvider({
   // A suffix that fails its checks (reorged/duplicate/out-of-window log, an index gap, a counter
   // mismatch), a head that moved BACKWARDS (RPC behind / switched), or a finalized block at the
   // same height whose hash changed (an RPC pool switching backends) drops the kept tree and this
-  // refresh rebuilds from the start block. An RPC error anywhere in the refresh (head read
-  // included) drops the kept tree too: that refresh serves last-known-good (withCache) and the
-  // NEXT successful refresh is the full rebuild. head-N reads (SHADE_TREE_CONFIRMATIONS>0)
-  // always rebuild (a reorg deeper than N would otherwise stick).
+  // refresh rebuilds from the start block. At the same height with no block hash to compare, the
+  // kept tree is reused only when the contract's counters are readable and agree with it. Absent
+  // counters (PaidAccessSet has no activeCount; an empty word; a reverted counter call) are not a
+  // consistency check, so that poll replays the full history instead. An RPC error that the
+  // refresh propagates (head read included) drops the kept tree too: that refresh serves
+  // last-known-good (withCache) and the NEXT successful refresh is the full rebuild. A reverted
+  // or empty counter call is not such an error (contractCounters returns null for it).
+  // head-N reads (SHADE_TREE_CONFIRMATIONS>0) always rebuild (a reorg deeper than N would
+  // otherwise stick).
   let scanned = null; // { to: number, hash: string|null, state: { group, liveIndex, active } }
   let lastSuccessfulAt = null;
   // Counters for tests and debugging: how often the tree was rebuilt from the full history vs
@@ -292,6 +297,13 @@ export function NodeRootProvider({
     let incremental;
     let state;
     let transitions = [];
+    // Set when a same-height poll had neither a block hash nor contract counters to check the
+    // kept tree against and replayed the full history instead. If that replay reproduces the kept
+    // root and live count, nothing was invalidated and the freshness ring is kept (as before this
+    // check existed; resetting it on every such poll would drop just-superseded roots inside F);
+    // otherwise the ring is reset like any other invalidated finalized scan.
+    let uncheckedKept = null;
+    let keptTreeConfirmed = false;
     try {
       // The head read and its decoding sit inside the invalidation boundary: a failed or
       // undecodable head read drops the kept tree like any other RPC error.
@@ -311,7 +323,9 @@ export function NodeRootProvider({
         // read alone. A different hash at that height means the RPC's view of the chain changed
         // (a backend switch, or a reorg the RPC reports), so the kept tree is not trusted. When
         // either hash is missing, fall back to the contract's counters at that block, the same
-        // consistency check a full replay uses.
+        // consistency check a full replay uses. When the counters are unavailable too (null: a
+        // contract without them such as PaidAccessSet, an empty word, a reverted call), nothing
+        // checks the kept tree, so this poll replays the full history.
         if (blockHash != null && scanned.hash != null) {
           if (blockHash !== scanned.hash) {
             stats.lastRejection = `finalized block ${observedAtBlock} changed hash`;
@@ -319,7 +333,11 @@ export function NodeRootProvider({
           }
         } else {
           counters = await contractCounters(addr, toBlock, rpcUrl);
-          if (!replayMatchesCounters(scanned.state, counters)) {
+          if (counters == null) {
+            stats.lastRejection = `no block hash and no contract counters at unchanged block ${observedAtBlock}`;
+            uncheckedKept = { root: stateRoot(scanned.state), active: scanned.state.active };
+            incremental = false;
+          } else if (!replayMatchesCounters(scanned.state, counters)) {
             stats.lastRejection = `kept tree disagrees with the contract counters at unchanged block ${observedAtBlock}`;
             incremental = false;
           }
@@ -359,11 +377,12 @@ export function NodeRootProvider({
         });
         state = { group: replay.group, liveIndex: replay.liveIndex, active: replay.active };
         stats.fullRebuilds++;
+        keptTreeConfirmed = uncheckedKept != null && stateRoot(state) === uncheckedKept.root && state.active === uncheckedKept.active;
       }
     } catch (e) {
-      // Same posture as before the tree was kept: any RPC error (head read included) drops the
-      // kept tree. withCache serves last-known-good for THIS refresh; the next successful refresh
-      // is a full, counter-checked rebuild.
+      // Same posture as before the tree was kept: any RPC error this refresh propagates (head read
+      // included) drops the kept tree. withCache serves last-known-good for THIS refresh; the next
+      // successful refresh is a full, counter-checked rebuild.
       scanned = null;
       throw e;
     }
@@ -377,7 +396,7 @@ export function NodeRootProvider({
     // logs alone. Reset the ring and publish only the current finalized root. This prevents a
     // day-long RPC outage from briefly reviving roots whose members have already withdrawn.
     const staleObservationGap = lastSuccessfulAt != null && refreshStartedAt - lastSuccessfulAt > freshnessMs;
-    const finalizedScanWasInvalidated = lastSuccessfulAt != null && tag === "finalized" && observedAtBlock != null && !incremental;
+    const finalizedScanWasInvalidated = lastSuccessfulAt != null && tag === "finalized" && observedAtBlock != null && !incremental && !keptTreeConfirmed;
     const resetToCurrent = staleObservationGap || finalizedScanWasInvalidated;
     if (resetToCurrent) pushRoot = newRootRing();
     let roots = null;

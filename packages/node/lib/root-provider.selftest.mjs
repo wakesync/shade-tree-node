@@ -220,7 +220,10 @@ function fakeRpc({ logs, cap, head, storage = "0x0", message = (c) => `exceed ma
         const tag = j.params[0];
         blockTags.push(tag);
         const n = tag === "latest" || tag === "finalized" ? state.head : Number(BigInt(tag));
-        return reply(n == null ? null : { number: "0x" + n.toString(16), stateRoot: "0x" + "00".repeat(32) });
+        // A real node returns the block hash. NodeRootProvider reuses its kept tree at an unchanged
+        // finalized height only when the hash (or the contract counters, which this fake does not
+        // serve) confirms it is the same block; a hashless head with no counters is a full replay.
+        return reply(n == null ? null : { number: "0x" + n.toString(16), hash: "0x" + n.toString(16).padStart(64, "0"), stateRoot: "0x" + "00".repeat(32) });
       }
       if (j.method === "eth_getLogs") {
         const f = j.params[0];

@@ -331,8 +331,10 @@ at 10k, Alchemy free at 2k), resolve the head block once per refresh so every pa
 start each contract at its deploy block from the network record (`deployBlocks`, or
 `SHADE_TREE_FROM_BLOCK` / `SHADE_TREE_FROM_BLOCKS`), and on finalized reads keep the replayed tree and only fetch
 and apply new blocks afterwards (a fresh page that fails its checks, or a finalized block whose
-hash changed at the same height, means a full counter-checked rebuild from the start block; an RPC
-error serves last-known-good for that refresh and the next successful refresh rebuilds). A poll that detects a root change hands its
+hash changed at the same height, means a full counter-checked rebuild from the start block; with
+no block hash the same-height poll checks the contract counters, and with no counters either it
+rebuilds; an RPC error serves last-known-good for that refresh and the next successful refresh
+rebuilds). A poll that detects a root change hands its
 snapshot to the gateway, so the change costs one refresh, not two. The gateway fails SOFT at startup when the chain is unreadable but
 `members.json` gives a root (`shade_tree_gateway_root_source_degraded`), and closed when nothing would be
 trusted. `docs/OPERATOR.md` "Public RPC log-range caps"; `docs/CONFIG.md`.
