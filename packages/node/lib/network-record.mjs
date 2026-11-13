@@ -577,14 +577,37 @@ export function networkEnvDefaults(name, opts = {}) {
   return envDefaultsFromRecords(records);
 }
 
-// Client-only convenience: explicit discovery always wins; an explicit group contract without an
+// Client-only convenience: explicit discovery always wins (a pinned node keeps the record's
+// member source and rate policy when SHADE_TREE_NETWORK names one, see below); an explicit group contract without an
 // explicit network is a custom deployment and must not inherit the bundled Grove's Sepolia chain,
 // staking profile, RPC, or scan start. An explicit SHADE_TREE_NETWORK selects that record;
 // otherwise use the bundled current v4 research Grove. Keeping this separate from applyNetworkEnv
 // means nodes/Elders never silently inherit a public client endpoint.
+//
+// A pinned node (SHADE_TREE_ONION) WITH an explicit SHADE_TREE_NETWORK is the one case where a
+// discovery source and a record meet (#250, the JavaScript side): the pin chooses the node, the
+// record still supplies the member source (staked set, RPC, deploy block, finality profile) and
+// the signed rate policy. Without it a client with no other member-source or rate settings looked
+// in members.json alone (`leafSource=invited`) under the legacy 120 s epoch, so its tunnels to a
+// node that admits only the record's staked set at the record's epoch failed. Not applied there:
+//   - the record's discovery keys: the pin stays the only node, no Elder or canopy signer beside it;
+//   - the record's default path and tier (SHADE_TREE_LEAF_SOURCE, SHADE_TREE_LIMIT): the leaf is
+//     found in members.json or the record's set, whichever holds it, and the tier comes from the
+//     usual path (identity file, then the limit option, SHADE_TREE_LIMIT, then SHADE_TREE_SLOTS,
+//     default 8), as the Rust client does behind --onion (#278).
+// A pin without SHADE_TREE_NETWORK is unchanged (no record), so a members.json client against a
+// local node keeps that node's 120 s default.
+const PINNED_SKIP = new Set([
+  "SHADE_TREE_BOOTNODE_ONION", "SHADE_TREE_BOOTNODE_ONIONS", "SHADE_TREE_BOOTNODE_ADMISSION",
+  "SHADE_TREE_DIR_SIGNER", "SHADE_TREE_DIRECTORY", "SHADE_TREE_LEAF_SOURCE", "SHADE_TREE_LIMIT",
+]);
 export function applyClientNetworkEnv(env = process.env, { root, defaultNetwork = DEFAULT_CLIENT_NETWORK } = {}) {
   const set = (key) => env[key] !== undefined && env[key] !== null && String(env[key]).trim() !== "";
-  if (set("SHADE_TREE_ONION") || set("SHADE_TREE_BOOTNODE_ONION") || set("SHADE_TREE_DIRECTORY")) return [];
+  if (set("SHADE_TREE_BOOTNODE_ONION") || set("SHADE_TREE_DIRECTORY")) return [];
+  if (set("SHADE_TREE_ONION")) {
+    if (!set("SHADE_TREE_NETWORK")) return [];
+    return applyNetworkEnv(env, { ...(root ? { root } : {}), skip: PINNED_SKIP });
+  }
   if (set("SHADE_TREE_NETWORK")) return applyNetworkEnv(env, { ...(root ? { root } : {}) });
   if (set("SHADE_TREE_GROUP_CONTRACT")) return [];
   return applyNetworkEnv(env, { name: defaultNetwork, ...(root ? { root } : {}) });
@@ -593,7 +616,8 @@ export function applyClientNetworkEnv(env = process.env, { root, defaultNetwork 
 // Copy the network defaults into `env` for every key NOT already set (empty string counts as
 // unset). Returns the list of keys it filled. No-op (returns []) when SHADE_TREE_NETWORK is unset.
 // Throws on a bad/invalid record — the caller decides whether that is fatal (shade-tree: yes).
-export function applyNetworkEnv(env = process.env, { name = env.SHADE_TREE_NETWORK, root, allowRetired = false } = {}) {
+// `skip` (a Set of keys) is never filled, whatever the record says (the pinned-client path above).
+export function applyNetworkEnv(env = process.env, { name = env.SHADE_TREE_NETWORK, root, allowRetired = false, skip = null } = {}) {
   if (!name) return [];
   const defaults = networkEnvDefaults(name, { ...(root ? { root } : {}), allowRetired });
   const applied = [];
@@ -604,6 +628,7 @@ export function applyNetworkEnv(env = process.env, { name = env.SHADE_TREE_NETWO
   const fromPinned = !unset("SHADE_TREE_FROM_BLOCK") || !unset("SHADE_TREE_FROM_BLOCKS");
   for (const [k, v] of Object.entries(defaults)) {
     if (fromPinned && (k === "SHADE_TREE_FROM_BLOCK" || k === "SHADE_TREE_FROM_BLOCKS")) continue;
+    if (skip && skip.has(k)) continue;
     if (unset(k)) { env[k] = v; applied.push(k); }
   }
   return applied;

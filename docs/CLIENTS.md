@@ -53,7 +53,12 @@ cleanUp();  // terminate snarkjs workers so the process can exit
 With no explicit discovery source, `new ShadeTreeClient({ secret, torPort })` uses the bundled
 current-v4 Sepolia Elder+signer pair. Pass `{ bootnode, dirSigner }` (or set the corresponding
 environment variables) to override them. For a single node, set `SHADE_TREE_ONION` or pass
-`{ onion }`. The live canopy directory is refreshed in the background about every five minutes with jitter.
+`{ onion }`. A pinned node takes nothing from the bundled record; add `SHADE_TREE_NETWORK=sepolia`
+(or `{ network: "sepolia" }`) when the node belongs to that record, so the client finds its leaf
+in the record's staked set, proves in the record's epoch and follows the record's session-ticket
+switch (`{ sessionTickets: false }` turns tickets off). The record's Elder and signer are not added
+beside the pin, and neither are its default leaf path and tier: the tier comes from the identity
+file, `{ limit }`, `SHADE_TREE_LIMIT`, or `SHADE_TREE_SLOTS` (default 8), as without a pin. The live canopy directory is refreshed in the background about every five minutes with jitter.
 
 Runnable example: `examples/agent-fetch.mjs`. Point it at your local fleet or an operator's
 v4 configuration before running it.

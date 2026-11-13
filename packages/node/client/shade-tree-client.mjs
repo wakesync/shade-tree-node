@@ -670,11 +670,6 @@ export class ShadeTreeClient {
     // Per-tunnel SOCKS circuit isolation (T-FEAT-17): default ON, harmless without
     // IsolateSOCKSAuth. Disable with { socksIsolation: false } or SHADE_TREE_SOCKS_ISOLATION=0.
     this.socksIsolation = opts.socksIsolation !== false && process.env.SHADE_TREE_SOCKS_ISOLATION !== "0";
-    // Session tickets (ADR 0011): { sessionTickets } or SHADE_TREE_SESSION_TICKETS=1 (the deployment
-    // record's `sessionTickets`, set at H2). OFF by default: one proof, one tunnel, per-tunnel
-    // rotation. ON: one proof buys a research-v1 book of six tickets at ONE node and the next five
-    // tunnels ride cheap ticket envelopes on the same Tor circuit, linkable to that node.
-    this.sessionTickets = opts.sessionTickets != null ? Boolean(opts.sessionTickets) : envFlag(process.env.SHADE_TREE_SESSION_TICKETS);
     this._books = new Map();          // onion -> live ticket book
     this._sessionRefused = new Set(); // onions that answered session-unsupported
     // Injectable SOCKS client (tests pass a fake); defaults to the real `socks` lib.
@@ -694,6 +689,13 @@ export class ShadeTreeClient {
     if (opts.torHost) process.env.SHADE_TREE_TOR_HOST = String(opts.torHost);
     if (opts.torPort) process.env.SHADE_TREE_TOR_PORT = String(opts.torPort);
     applyClientNetworkEnv(process.env);
+    // Session tickets (ADR 0011): { sessionTickets } or SHADE_TREE_SESSION_TICKETS=1 (the deployment
+    // record's `sessionTickets`, set at H2). OFF by default: one proof, one tunnel, per-tunnel
+    // rotation. ON: one proof buys a research-v1 book of six tickets at ONE node and the next five
+    // tunnels ride cheap ticket envelopes on the same Tor circuit, linkable to that node.
+    // Read AFTER applyClientNetworkEnv so the first client in a process sees the record's switch
+    // like every later one (#250); an explicit option (including false) or env value still wins.
+    this.sessionTickets = opts.sessionTickets != null ? Boolean(opts.sessionTickets) : envFlag(process.env.SHADE_TREE_SESSION_TICKETS);
     this.onion = (process.env.SHADE_TREE_ONION || "").replace(/\.onion$/, "") || null;
     this._selection = null;
     // Known gateway protocol range (T-FEAT-11), if the caller learned one out-of-band. null =>
