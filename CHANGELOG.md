@@ -4,6 +4,19 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### Tests: hand-built over-spend envelopes name their artifact set
+
+- The over-spend steps of `test/onchain-tiers.selftest.mjs` (through `scripts/integration-tiers.mjs`)
+  and `test/paid-access.selftest.mjs` built their v4 envelopes by hand without `artifact`. Since the
+  PSE setup adoption (#214) the lock records `rln-0b25f824a04da3a8` as the previous set, so a
+  default gateway read those envelopes as that retired set and refused them
+  `gate:artifact-retired`, and the slash checks after them failed. They now go through a new
+  `envelopeFromProof(p, target, nonce)` in `packages/node/lib/rln.mjs`, which copies the prover's
+  id and throws on a result without one.
+- The wrong-root step in `paid-access` had the same literal and passed only because the root check
+  runs before the artifact check; it uses the helper too. `scripts/integration-sepolia.mjs` and
+  `scripts/demo-e2e.mjs` do as well.
+
 ### Get access page: the terminal path is the keyless command
 
 - The Get access page and the agent brief on the landing page now show

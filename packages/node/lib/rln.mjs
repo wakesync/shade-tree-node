@@ -32,7 +32,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { dirname, join } from "node:path";
 import { createRequire } from "node:module";
-import { loadArtifactSet, loadProverSets, resolveArtifact, selectArtifact, artifactIdOf, builtinArtifactId } from "./zk-artifacts.mjs";
+import { loadArtifactSet, loadProverSets, resolveArtifact, selectArtifact, artifactIdOf, builtinArtifactId, isArtifactId } from "./zk-artifacts.mjs";
 
 import {
   RLN,
@@ -428,6 +428,19 @@ export async function proveForSlot(secret, epoch, i, signal, { group, artifact, 
     share: { x: String(ps.x), y: String(ps.y) },
     artifact: artifactId,
   };
+}
+
+// Pack a proveForSlot result into the v4 wire envelope (WIRE-SPEC 6.1), with the same field order
+// as the client's buildEnvelope. For scripts and tests that prove a slot by hand (an over-spend
+// pair, a wrong-root proof) instead of going through buildEnvelope. `artifact` is always copied:
+// an envelope without it is read as the gateway's legacy id and is refused artifact-retired once
+// that id leaves the accepted set (T-HARD-8). `target` and `nonce` must be the pair the signal was
+// built from. Throws on a result with no proof or no valid artifact id rather than sending a
+// field-less envelope.
+export function envelopeFromProof(p, target, nonce) {
+  if (!p || typeof p !== "object" || !p.proof) throw new TypeError("envelopeFromProof: not a proveForSlot result");
+  if (!isArtifactId(p.artifact)) throw new TypeError("envelopeFromProof: proof result names no artifact id");
+  return { v: 4, target, nonce, artifact: p.artifact, proof: p.proof, nullifier: p.nullifier, externalNullifier: p.externalNullifier, share: p.share };
 }
 
 // ---- verify an envelope (gateway side) --------------------------------------

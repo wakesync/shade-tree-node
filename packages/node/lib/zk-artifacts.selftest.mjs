@@ -39,6 +39,7 @@ import { canonicalCaps, hasCaps, signCaps, verifyCapsSig, canonicalCapsBytes, MA
 import { buildGatewayCaps } from "../bootnode/heartbeat.mjs";
 import {
   verifyEnvelope, currentEpoch, externalNullifierFor, calculateSignalHash, requestSignal, _setArtifactSet, getArtifactSet, cleanUp,
+  envelopeFromProof,
 } from "./rln.mjs";
 import { makeHandler, _setRecentRoots } from "../gateway/gateway.mjs";
 import { registry as metrics } from "./metrics.mjs";
@@ -329,6 +330,35 @@ await test("loadProverSets: default == the shipped set under the built-in id; SH
   assert.deepEqual(sets.map((s) => s.id), [ALT, BUILTIN], "order preserved (newest first)");
   assert.throws(() => loadProverSets({ env: { SHADE_TREE_ZK_PROVER_ARTIFACTS: `${UNKNOWN}=${altDir}` } }), /artifact id mismatch/);
   assert.throws(() => loadProverSets({ env: { SHADE_TREE_ZK_PROVER_ARTIFACTS: join(work, "missing") } }), /missing/);
+});
+
+// envelopeFromProof: the hand-built envelope helper (over-spend pairs, wrong-root proofs in the
+// anvil suites and scripts). Field-less hand-built envelopes were refused artifact-retired by a
+// default gateway once the lock recorded a previousArtifactId (#214); the helper always names the set.
+await test("envelopeFromProof copies the prover's artifact id in buildEnvelope's field order; a default gateway gets past 3b with it and refuses the field-less copy artifact-retired", async () => {
+  const target = "example.com:443", nonce = "abc123";
+  const base = consistentEnvelope(undefined);
+  const p = { proof: base.proof, nullifier: base.nullifier, externalNullifier: base.externalNullifier, share: base.share, slot: 0, artifact: BUILTIN };
+  const env = envelopeFromProof(p, target, nonce);
+  assert.deepEqual(Object.keys(env), ["v", "target", "nonce", "artifact", "proof", "nullifier", "externalNullifier", "share"]);
+  assert.deepEqual([env.v, env.target, env.nonce, env.artifact], [4, target, nonce, BUILTIN]);
+  assert.equal("slot" in env, false, "the private slot never goes on the wire");
+  const dflt = loadArtifactSet({ env: {} }); // what a gateway with no artifact config accepts
+  const roots = new Set(["999"]);
+  const withField = await verifyEnvelope(env, roots, nowMs, { artifacts: dflt });
+  assert.equal(String(withField.reason).startsWith("artifact-"), false, `named set passes 3b (got ${withField.reason})`);
+  const { artifact: _drop, ...fieldless } = env;
+  const without = await verifyEnvelope(fieldless, roots, nowMs, { artifacts: dflt });
+  assert.equal(without.reason, `artifact-retired:${PREVIOUS}`, "the same envelope without the field is read as the retired previous set");
+});
+await test("envelopeFromProof fails closed on a result it cannot name: no proof, no / garbage artifact => TypeError, never a field-less envelope", () => {
+  const good = { proof: { snarkProof: {} }, nullifier: "5", externalNullifier: "3", share: { x: "1", y: "2" }, artifact: BUILTIN };
+  for (const junk of [null, undefined, 42, "proof", {}, { ...good, proof: undefined }, { ...good, proof: null }]) {
+    assert.throws(() => envelopeFromProof(junk, "h:443", "n"), /not a proveForSlot result/, JSON.stringify(junk));
+  }
+  for (const art of [undefined, null, "", "Not An Id", "a".repeat(65), 7, [BUILTIN], { id: BUILTIN }]) {
+    assert.throws(() => envelopeFromProof({ ...good, artifact: art }, "h:443", "n"), /names no artifact id/, JSON.stringify(art));
+  }
 });
 
 const fakePool = { nextSlot: () => ({ epoch: 1n, slot: 0 }), ensureGroup: async () => ({}) };

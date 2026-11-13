@@ -553,6 +553,9 @@ lock's `previousArtifactId` else the built-in id), so an un-upgraded client keep
 that id is accepted and is rejected `artifact-retired:<id>` once it is not; a gateway that predates
 the field ignores it. The client sends the NEWEST of its own sets that the gateway advertises in
 its signed caps (`caps.artifacts`, §3), else optimistically its newest (`selectArtifact`).
+Scripts and tests that prove a slot by hand (an over-spend pair, a wrong-root proof) pack the
+`proveForSlot` result with `envelopeFromProof(p, target, nonce)` (`packages/node/lib/rln.mjs`), which
+writes this same shape with `artifact` and throws rather than build an envelope without one.
 
 `nullifier`, `externalNullifier`, and `share` are copies of the proof's public signals but are
 NON-authoritative: `verifyEnvelope` reads them from `proof.snarkProof.publicSignals` (`ps`), not

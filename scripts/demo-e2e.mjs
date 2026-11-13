@@ -29,7 +29,7 @@ import { ethers } from "ethers";
 import { poseidon1 } from "poseidon-lite";
 import {
   identityFor, identitySecretOf, deriveCommitment, groupFromIdentities, newGroup,
-  rateCommitmentOf, currentEpoch, requestSignal, proveForSlot, verifyEnvelope,
+  rateCommitmentOf, currentEpoch, requestSignal, proveForSlot, envelopeFromProof, verifyEnvelope,
   reconstructSecret, toField, cleanUp,
 } from "../packages/node/lib/rln.mjs";
 
@@ -192,11 +192,11 @@ async function main() {
   console.log(`\n${FAIL === 0 ? "✓ ALL PASS" : "✗ FAILURES"} — ${PASS} passed, ${FAIL} failed`);
 }
 
-// Pack a proveForSlot result into the explicit v4 wire envelope the gateway consumes.
-// target + nonce ride along so the gateway can BIND the proof to this target (verifyEnvelope 2b);
-// they MUST be the same pair the signal was built from.
+// Pack a proveForSlot result into the explicit v4 wire envelope the gateway consumes (with its
+// `artifact` id). target + nonce ride along so the gateway can BIND the proof to this target
+// (verifyEnvelope 2b); they MUST be the same pair the signal was built from.
 async function pack(p, target, nonce) {
-  return { v: 4, target, nonce, proof: p.proof, nullifier: p.nullifier, externalNullifier: p.externalNullifier, share: p.share };
+  return envelopeFromProof(p, target, nonce);
 }
 const short = (s) => String(s).slice(0, 10) + "…";
 
