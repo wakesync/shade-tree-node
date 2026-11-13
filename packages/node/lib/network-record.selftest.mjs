@@ -196,6 +196,48 @@ function main() {
       const rpcApplied = applyClientNetworkEnv(rpcOnly, { root: clientRoot, defaultNetwork: "sepolia" });
       ok(rpcApplied.includes("SHADE_TREE_GROUP_CONTRACT") && rpcOnly.SHADE_TREE_RPC_URL === "https://operator.example.test" && rpcOnly.SHADE_TREE_CHAIN_ID === "11155111",
         "an RPC-only override retains the bundled public profile while preserving the explicit RPC");
+
+      // #250 (JavaScript side): a pinned node plus an explicit network keeps the record's member
+      // source and rate policy, and nothing that would add discovery beside the pin.
+      const PIN = "b".repeat(56) + ".onion";
+      const pinnedNet = { SHADE_TREE_ONION: PIN, SHADE_TREE_NETWORK: "sepolia" };
+      const pinnedApplied = applyClientNetworkEnv(pinnedNet, { root: clientRoot });
+      ok(pinnedNet.SHADE_TREE_GROUP_CONTRACT === ADDR && pinnedNet.SHADE_TREE_RPC_URL === "https://rpc.example.test" && pinnedNet.SHADE_TREE_CHAIN_ID === "11155111" &&
+        pinnedNet.SHADE_TREE_STAKE_PROFILE === "public-stake-v1" && pinnedNet.SHADE_TREE_FROM_BLOCK === "0x2a",
+        "pinned onion + SHADE_TREE_NETWORK still loads the record's staked set, RPC, chain, profile and deploy block (#250)");
+      ok(pinnedNet.SHADE_TREE_EPOCH_SECONDS === "60" && pinnedNet.SHADE_TREE_ROOT_FRESHNESS_SECONDS === "60" && pinnedNet.SHADE_TREE_TUNNEL_MAX_PAYLOAD_BYTES === "41943040",
+        "pinned onion + SHADE_TREE_NETWORK proves under the record's signed rate policy, not the legacy 120 s epoch");
+      ok(pinnedNet.SHADE_TREE_ONION === PIN && !("SHADE_TREE_BOOTNODE_ONION" in pinnedNet) && !("SHADE_TREE_BOOTNODE_ONIONS" in pinnedNet) &&
+        !("SHADE_TREE_DIR_SIGNER" in pinnedNet) && !("SHADE_TREE_BOOTNODE_ADMISSION" in pinnedNet) && !("SHADE_TREE_DIRECTORY" in pinnedNet),
+        "the pin stays the only node: no Elder, Elder list, canopy signer, admission or static directory is installed beside it");
+      ok(!("SHADE_TREE_LEAF_SOURCE" in pinnedNet) && !("SHADE_TREE_LIMIT" in pinnedNet),
+        "the record's default path and tier are not imposed behind a pin (auto leaf discovery, tier from the identity)");
+      ok(pinnedApplied.includes("SHADE_TREE_GROUP_CONTRACT") && !pinnedApplied.some((k) => /BOOTNODE|DIR_SIGNER|DIRECTORY|LEAF_SOURCE|LIMIT$/.test(k)),
+        "the applied-keys report names what the record filled and nothing it skipped");
+
+      const pinnedOwn = { SHADE_TREE_ONION: PIN, SHADE_TREE_NETWORK: "sepolia", SHADE_TREE_GROUP_CONTRACT: ADDR2, SHADE_TREE_EPOCH_SECONDS: "120", SHADE_TREE_LEAF_SOURCE: "invited" };
+      applyClientNetworkEnv(pinnedOwn, { root: clientRoot });
+      ok(pinnedOwn.SHADE_TREE_GROUP_CONTRACT === ADDR2 && pinnedOwn.SHADE_TREE_EPOCH_SECONDS === "120" && pinnedOwn.SHADE_TREE_LEAF_SOURCE === "invited",
+        "behind a pin, explicit env still beats the record (contract, epoch, leaf source)");
+
+      const pinnedNoNet = { SHADE_TREE_ONION: PIN };
+      ok(applyClientNetworkEnv(pinnedNoNet, { root: clientRoot, defaultNetwork: "sepolia" }).length === 0 && Object.keys(pinnedNoNet).length === 1,
+        "a pin without SHADE_TREE_NETWORK still takes nothing from the bundled default (a local members.json node keeps its own epoch)");
+
+      const pinnedEmptyNet = { SHADE_TREE_ONION: PIN, SHADE_TREE_NETWORK: "  " };
+      ok(applyClientNetworkEnv(pinnedEmptyNet, { root: clientRoot, defaultNetwork: "sepolia" }).length === 0 && !("SHADE_TREE_GROUP_CONTRACT" in pinnedEmptyNet),
+        "a blank SHADE_TREE_NETWORK behind a pin counts as unset, not as the bundled default");
+
+      const pinnedBoot = { SHADE_TREE_ONION: PIN, SHADE_TREE_NETWORK: "sepolia", SHADE_TREE_BOOTNODE_ONION: "c".repeat(56) + ".onion" };
+      ok(applyClientNetworkEnv(pinnedBoot, { root: clientRoot }).length === 0 && !("SHADE_TREE_GROUP_CONTRACT" in pinnedBoot),
+        "an explicit Elder beside the pin is still a foreign discovery source: the record is not applied");
+
+      let traversal = null;
+      try { applyClientNetworkEnv({ SHADE_TREE_ONION: PIN, SHADE_TREE_NETWORK: "../sepolia" }, { root: clientRoot }); } catch (e) { traversal = e.message; }
+      ok(traversal !== null, "a pinned client with a path-traversal network name is refused, not silently ignored");
+      let missing = null;
+      try { applyClientNetworkEnv({ SHADE_TREE_ONION: PIN, SHADE_TREE_NETWORK: "no-such-network-zzz" }, { root: clientRoot }); } catch (e) { missing = e.message; }
+      ok(missing !== null && /no such network/.test(missing), "a pinned client naming an unknown network fails closed with the reason");
     } finally {
       rmSync(clientRoot, { recursive: true, force: true });
     }

@@ -4,6 +4,17 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### A pinned JS client still loads the named network record (#250)
+
+- `SHADE_TREE_ONION` (`--onion`, `{ onion }`) with an explicit `SHADE_TREE_NETWORK` now takes
+  that record's member source and signed rate policy: staked set, RPC list, chain, stake profile,
+  deploy block, epoch, root freshness, payload cap and session tickets. Before, the pin skipped the
+  record entirely, so the client looked for its leaf in `members.json` alone (`leafSource=invited`)
+  and proved at the legacy 120 s epoch, and every tunnel to a node of that record failed. The Rust
+  client already did this (#278).
+- The record's Elder, Elder list, canopy signer, static directory, default leaf path and default
+  tier are not applied behind a pin. A pin without `SHADE_TREE_NETWORK` is unchanged.
+
 ### Get access page: the terminal path is the keyless command
 
 - The Get access page and the agent brief on the landing page now show
