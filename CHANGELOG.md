@@ -4,6 +4,17 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### JSON-RPC calls keep their connection between root polls
+
+- The raw JSON-RPC calls (root provider, gateway registry, gateway paid-set leaf count, v4
+  preflight) now
+  use their own fetch dispatcher, which keeps an idle connection for 30 s. Node's default keeps one
+  for 4 s, so the root provider's 12 s poll opened a new TCP and TLS connection to the RPC provider
+  on every poll. Other `fetch` calls keep Node's default dispatcher.
+- New `SHADE_TREE_RPC_KEEPALIVE_MS` (default `30000`, `0` = off). Skipped when a proxy dispatcher
+  is installed (for example `NODE_USE_ENV_PROXY=1`).
+- New `packages/node/lib/rpc-keepalive.selftest.mjs`.
+
 ### Get access page: the terminal path is the keyless command
 
 - The Get access page and the agent brief on the landing page now show
