@@ -163,6 +163,30 @@ The first proof of a process is still a full load. Tests: `packages/node/client/
 (loopback fake JSON-RPC: match, mismatch, RPC error, malformed answers, paid set, and late replies
 from an older epoch's check or full load after a newer epoch's reload succeeded or failed).
 
+### Session class (session tickets on)
+
+With `sessionTickets` on, the JS client asks for the best session class the node serves, in the
+order of `SESSION_CLASS_PREFERENCE`: `research-v2`, then `research-v1` (ADR 0013 decision 6, the
+same order as the Rust client). The two classes are the same book (six tickets, 90 s life); a
+`research-v2` book stays open after up to 60 s idle instead of 15 s, so a client that opens one
+tunnel at a time keeps its book across longer gaps instead of proving again.
+
+- A directory candidate gets the best class its SIGNED caps advertise (`pickSessionClass`). A
+  candidate whose caps list no class this client knows is not a session candidate.
+- A pinned onion has no caps. The client asks it for `research-v2`. If the node answers
+  `session-class` (it does not serve that class), the client remembers that for this onion and
+  opens a `research-v1` book in the same call. The class is part of the proof's signal, so that
+  costs one more proof on a new slot; the node checks the class before it verifies the proof, so
+  the refused init spent nothing at the node. Later books at that onion go straight to
+  `research-v1`. A node that refuses both classes fails the call with `session-class`.
+- The node's policy echo must still match the class asked for exactly; any other echo fails
+  closed (`session-policy-mismatch`) with no fallback.
+
+Tests: `packages/node/client/session-class.selftest.mjs` (fake node behind a fake SOCKS layer:
+class order, the 20 s gap a `research-v1` book does not survive, the pinned fallback, the policy
+mismatch, and two inits whose refusals are held and released in either order, with the fallback
+succeeding or refused).
+
 ## Option B: local proxy (`packages/node/client/shim.mjs`)
 
 Use this when the client is a **stock tool** you can't change (browser, curl, any
