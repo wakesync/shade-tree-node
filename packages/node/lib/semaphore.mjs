@@ -98,6 +98,7 @@ export {
   rateCommitmentOf,
   deriveCommitment,
   proveForSlot,
+  envelopeFromProof,
   verifyEnvelope,
   reconstructSecret,
   loadGroupOnchain,

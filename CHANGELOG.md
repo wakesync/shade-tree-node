@@ -4,6 +4,20 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### On-chain over-spend selftests pass with Foundry, and CI runs them (#439)
+
+- With `anvil` and `forge` on `PATH`, `test/onchain-tiers.selftest.mjs` failed 10 checks and
+  `test/paid-access.selftest.mjs` failed 5. Their over-spend steps built the v4 envelope by hand
+  and left out `artifact`. The proof itself was made with the current set, but a gateway reads a
+  field-less envelope as the lock's `previousArtifactId` (`rln-0b25f824a04da3a8`, since #214),
+  which is retired, so both sends were refused `gate:artifact-retired` and no slash was submitted.
+- Those steps now pack the proof with a new `envelopeFromProof(p, target, nonce)` in
+  `packages/node/lib/rln.mjs` (also exported from `semaphore.mjs`). It writes `buildEnvelope`'s
+  shape with the prover's own `artifact` id and throws on a result that names none. The
+  wrong-root step in `paid-access` (which passed only because the root check runs first),
+  `scripts/integration-sepolia.mjs` and `scripts/demo-e2e.mjs` use it too.
+- CI's Node job now installs Foundry, so the anvil suites run there instead of printing SKIP.
+
 ### `shadenet init --dir <relative path>` writes a config that loads (#436)
 
 - `init` wrote the `--dir` value into `config.toml` as given, while the loader resolves relative

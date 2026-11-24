@@ -139,7 +139,7 @@ async function main() {
 
     // ---- 2. three members: static S (tier 8), staked A (tier 8), paid P (tier 32) --------------
     const { memberOf, sendEnvelope, startGateway, stakeViaCli } = await import("../scripts/integration-tiers.mjs");
-    const { groupFromIdentities, newGroup, currentEpoch, requestSignal, proveForSlot } = await import("../packages/node/lib/rln.mjs");
+    const { groupFromIdentities, newGroup, currentEpoch, requestSignal, proveForSlot, envelopeFromProof } = await import("../packages/node/lib/rln.mjs");
     const { makeSlotPool, buildEnvelope, makeLeafSourceLoader } = await import("../packages/node/client/shade-tree-client.mjs");
     const seed = () => "0x" + randomBytes(32).toString("hex");
     const S = memberOf(seed(), 8), A = memberOf(seed(), 8), P = memberOf(seed(), 32);
@@ -219,7 +219,7 @@ async function main() {
     const epoch = currentEpoch();
     const nx = "x-" + randomBytes(4).toString("hex");
     const ex = await proveForSlot(X.seed, epoch, 0, requestSignal(targetList[0], nx), { group: gX, limit: 8 });
-    const ackX = await sendEnvelope({ v: 4, target: targetList[0], nonce: nx, proof: ex.proof, nullifier: ex.nullifier, externalNullifier: ex.externalNullifier, share: ex.share });
+    const ackX = await sendEnvelope(envelopeFromProof(ex, targetList[0], nx));
     ok(ackX.ok === false && ackX.err === "gate:wrong-group-root", `a proof under an unknown root is dropped -> ${JSON.stringify(ackX)}`);
 
     // ---- 6. paid over-spend -> slash routed to the PAID contract --------------------------------
@@ -230,7 +230,7 @@ async function main() {
     // slot 5: a fresh nullifier (slot 0 was P's normal request above); two DISTINCT signals under it.
     const e1 = await proveForSlot(P.seed, epoch, 5, requestSignal(targetList[0], n1), { group: dP.group, limit: 32 });
     const e2 = await proveForSlot(P.seed, epoch, 5, requestSignal(targetList[0], n2), { group: dP.group, limit: 32 });
-    const mk = (n, e) => ({ v: 4, target: targetList[0], nonce: n, proof: e.proof, nullifier: e.nullifier, externalNullifier: e.externalNullifier, share: e.share });
+    const mk = (n, e) => envelopeFromProof(e, targetList[0], n);
     const a1 = await sendEnvelope(mk(n1, e1));
     const a2 = await sendEnvelope(mk(n2, e2), { timeoutMs: 180000 });
     ok(a1.ok === true && a2.ok === false && a2.err === "over-spend-slashed", `P's second distinct signal on slot 5 is dropped over-spend-slashed (${JSON.stringify(a1)} then ${JSON.stringify(a2)})`);

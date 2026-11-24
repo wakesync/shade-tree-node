@@ -43,7 +43,7 @@ import { dirname, join } from "node:path";
 import { ethers } from "ethers";
 import {
   identityFor, identitySecretOf, identityCommitmentOf, rateCommitmentOf, groupFromIdentities, newGroup, deriveCommitment,
-  currentEpoch, requestSignal, proveForSlot, toField, EPOCH_SECONDS,
+  currentEpoch, requestSignal, proveForSlot, envelopeFromProof, toField, EPOCH_SECONDS,
 } from "../packages/node/lib/rln.mjs";
 import { makeSlotPool, buildEnvelope } from "../packages/node/client/shade-tree-client.mjs";
 
@@ -267,10 +267,10 @@ export async function runTierIntegration(opts) {
     // nonce; distinct nonces => distinct signals (x) under the SAME nullifier (slot 0, this epoch).
     const n1 = "b-n1-" + randomBytes(4).toString("hex");
     const e1 = await proveForSlot(B.seed, epoch, 0, requestSignal(targets[0], n1), { group: g, limit: 32 });
-    const env1 = { v: 4, target: targets[0], nonce: n1, proof: e1.proof, nullifier: e1.nullifier, externalNullifier: e1.externalNullifier, share: e1.share };
+    const env1 = envelopeFromProof(e1, targets[0], n1);
     const n2 = "b-n2-" + randomBytes(4).toString("hex");
     const e2 = await proveForSlot(B.seed, epoch, 0, requestSignal(targets[0], n2), { group: g, limit: 32 });
-    const env2 = { v: 4, target: targets[0], nonce: n2, proof: e2.proof, nullifier: e2.nullifier, externalNullifier: e2.externalNullifier, share: e2.share };
+    const env2 = envelopeFromProof(e2, targets[0], n2);
     log("bob", `over-spend 1/2 slot 0 nullifier ${e1.nullifier.slice(0, 12)}.. -> sending`);
     const a1 = await sendEnvelope(env1);
     log("bob", `over-spend 1/2 -> ${JSON.stringify(a1)}`);
