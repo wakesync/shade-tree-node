@@ -4,6 +4,7 @@ name: ci
 #   node      -- JavaScript selftests. PRs run the full suite once, on Node 24, under c8 with the
 #                checked coverage thresholds. main and the nightly run the 20/22/24 matrix, with
 #                Node 24 under coverage (HYG-11: same coverage per PR, a third of the runner minutes).
+#                Foundry is installed here too, so the anvil suites run instead of printing SKIP (#439).
 #   contracts -- Foundry contracts once (independent of the Node runtime)
 #   rust      -- every Rust workspace target/feature plus fmt and strict Clippy (cached)
 #   lint      -- `npm run lint` (eslint bug net, not a formatter)
@@ -74,6 +75,14 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
+
+      # anvil + forge for the on-chain selftests (onchain-tiers, paid-access, registrar, and part 2
+      # of exit-gateway). Without them those suites print `SKIP anvil/forge not on PATH` and exit 0,
+      # which hid a red over-spend step on main (#439).
+      - name: Install Foundry
+        uses: foundry-rs/foundry-toolchain@dba66c27052e63476d886f22216e119ba7e615bf # v1.9.2
+        with:
+          version: stable
 
       - name: Install dependencies
         run: npm ci
