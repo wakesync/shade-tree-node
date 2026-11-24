@@ -4,7 +4,7 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
-### On-chain over-spend selftests pass with Foundry, and CI runs them (#439)
+### On-chain over-spend selftests pass with Foundry (#439)
 
 - With `anvil` and `forge` on `PATH`, `test/onchain-tiers.selftest.mjs` failed 10 checks and
   `test/paid-access.selftest.mjs` failed 5. Their over-spend steps built the v4 envelope by hand
@@ -15,7 +15,6 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
   So do the wrong-root step in `paid-access` (which passed only because the root check runs
   first) and the same hand-built envelopes in `scripts/integration-sepolia.mjs` and
   `scripts/demo-e2e.mjs`.
-- CI's Node job now installs Foundry, so the anvil suites run there instead of printing SKIP.
 
 ### `shadenet init --dir <relative path>` writes a config that loads (#436)
 
