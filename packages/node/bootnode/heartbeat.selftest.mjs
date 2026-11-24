@@ -38,8 +38,9 @@ import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { generateKeyPairSync, randomBytes } from "node:crypto";
 import {
-  loadIdentity, resolveOperator, announceOnce, makeBeat, makeFanoutBeat, runHeartbeat, heartbeatConfig, egressCheckEnabled,
+  loadIdentity, resolveOperator, announceOnce, makeBeat, makeFanoutBeat, runHeartbeat, heartbeatConfig, egressCheckEnabled, heartbeatMetricsText,
 } from "./heartbeat.mjs";
+import { heartbeatListing, listingNotice } from "../lib/node-supervisor.mjs";
 import { buildAnnounce, verifyAnnounce, verifyOperatorSig, canonicalAnnounceBytes, operatorAuthMessage } from "./announce.mjs";
 import { postOverTor, parseHttp } from "./fetch.mjs";
 import { pubkeyToOnion } from "../lib/directory.mjs";
@@ -319,6 +320,79 @@ async function main() {
     const thrower = makeFanoutBeat({ bootnodes: ["aaaaaaaaaaaaaaaaaaaaaaaa.onion"], announce: fanAnnounce, egress: async () => { throw new Error("probe crashed"); }, enabled: true, log: (s) => flogs.push(s) });
     r = await thrower();
     ok(r.failed === true && /probe crashed/.test(r.err), "an egress probe that throws is a transport failure, never a crash");
+  }
+
+  // ===================================================================================
+  console.log("\n4c. issue 428: each Elder's answer is recorded as it arrives; status reads accepted, pending, refused:");
+  {
+    // An Elder whose answer the test releases by hand (a deferred promise), and one that answers at once.
+    const deferred = () => { let resolve, reject; const promise = new Promise((a, b) => { resolve = a; reject = b; }); return { promise, resolve, reject }; };
+    const settle = () => new Promise((r) => setImmediate(r));
+    const listed = () => heartbeatListing(heartbeatMetricsText());
+    const A = "aaaaaaaaaaaaaaaaaaaaaaaa.onion", B = "bbbbbbbbbbbbbbbbbbbbbbbb.onion";
+    let held = null;
+    let answerA = async () => ({ ok: true, staked: true, ttl: 900 });
+    const announce = (elder) => (elder === A ? answerA() : (held = deferred()).promise);
+    const fan = makeFanoutBeat({ bootnodes: [A, B], announce, egress: async () => ({ healthy: true }), enabled: true, log: () => {} });
+    let l = listed();
+    ok(l.eldersAccepted === 0 && l.eldersPending === 2 && l.eldersTotal === 2, "before the first cycle both Elders read as pending, not refused");
+    // Cycle 1: A accepts at once, B is held.
+    let cycle = fan();
+    await settle();
+    l = listed();
+    const midNotice = listingNotice(l);
+    ok(l.eldersAccepted === 1 && l.eldersPending === 1 && l.eldersTotal === 2, "A accepted while B is held: 1 accepted, 1 pending (was 0 of 2 until B answered)");
+    ok(midNotice === "1 of 2 Elder Trees accepted, 1 pending (the first announce is still in progress)", `status line while B is pending: ${midNotice}`);
+    ok(typeof l.lastAcceptedAt === "string", "lastAcceptedAt is still reported beside the counts");
+    held.resolve({ ok: true, staked: true, ttl: 900 });
+    let r = await cycle;
+    l = listed();
+    ok(r.ok === true && r.accepted === 2 && l.eldersAccepted === 2 && l.eldersPending === 0 && listingNotice(l) === null, "B accepts: 2 of 2, nothing pending, status prints no warning");
+    // Cycle 2 (state change across cycles): A now refuses at once, B is held. B keeps its last answer
+    // (accepted) until the new one arrives, so the count does not dip at the start of the cycle.
+    answerA = async () => ({ ok: false, err: "not-staked" });
+    cycle = fan();
+    await settle();
+    l = listed();
+    ok(l.eldersAccepted === 1 && l.eldersPending === 0, "cycle 2, A refused and B held: B's previous acceptance still counts (1 accepted, 0 pending)");
+    // B's answer is a failure (transport error): recorded the moment it lands.
+    held.reject(new Error("no circuit"));
+    r = await cycle;
+    l = listed();
+    ok(r.ok === false && r.accepted === 0 && l.eldersAccepted === 0 && l.eldersPending === 0, "B fails: 0 accepted, 0 pending");
+    ok(/^no Elder Tree lists this node yet \(0 of 2 accepted the last announce\)/.test(listingNotice(l)), "every Elder answered and none accepted: the old 'no Elder Tree lists this node' line");
+    // A fresh heartbeat where the first answer is a refusal and the other Elder is still pending.
+    const fan2 = makeFanoutBeat({ bootnodes: [A, B], announce, egress: async () => ({ healthy: true }), enabled: true, log: () => {} });
+    cycle = fan2();
+    await settle();
+    l = listed();
+    ok(l.eldersAccepted === 0 && l.eldersPending === 1 && listingNotice(l) === "0 of 2 Elder Trees accepted, 1 pending (the first announce is still in progress)", "first cycle, A refused, B pending: 0 of 2 accepted, 1 pending");
+    held.resolve({ ok: true, staked: true, ttl: 900 });
+    r = await cycle;
+    l = listed();
+    ok(r.ok === true && r.accepted === 1 && l.eldersAccepted === 1 && l.eldersPending === 0 && listingNotice(l) === null, "B accepts late: 1 of 2, nothing pending");
+    // An Elder that throws while the other is still pending.
+    const fan3 = makeFanoutBeat({ bootnodes: [A, B], announce, egress: async () => ({ healthy: true }), enabled: true, log: () => {} });
+    answerA = async () => { throw new Error("tor circuit failed"); };
+    cycle = fan3();
+    await settle();
+    l = listed();
+    ok(l.eldersAccepted === 0 && l.eldersPending === 1, "A errors while B is held: 0 accepted, 1 pending");
+    held.resolve({ ok: true, staked: true, ttl: 900 });
+    await cycle;
+    ok(listed().eldersAccepted === 1 && listed().eldersPending === 0, "B accepts: 1 accepted, 0 pending");
+    // Egress down: nothing announced, nothing pending, 0 accepted (as before this change).
+    const gated2 = makeFanoutBeat({ bootnodes: [A, B], announce, egress: async () => ({ healthy: false, target: "example.com:443", reason: "ECONNREFUSED" }), enabled: true, log: () => {} });
+    r = await gated2();
+    l = listed();
+    ok(r.skipped === true && l.eldersAccepted === 0 && l.eldersPending === 0, "egress DOWN: 0 accepted, 0 pending");
+    const thrower2 = makeFanoutBeat({ bootnodes: [A, B], announce, egress: async () => { throw new Error("probe crashed"); }, enabled: true, log: () => {} });
+    r = await thrower2();
+    l = listed();
+    ok(r.failed === true && l.eldersAccepted === 0 && l.eldersPending === 0, "egress probe throws: 0 accepted, 0 pending");
+    // A heartbeat that predates the pending gauge: the listing keeps its old shape and the old line.
+    const old = heartbeatListing("shade_tree_heartbeat_elders_accepted 0\nshade_tree_heartbeat_elders_total 2\nshade_tree_heartbeat_last_success_timestamp_seconds 0\n");
+    ok(!("eldersPending" in old) && /^no Elder Tree lists this node yet/.test(listingNotice(old)) && listingNotice(null) === null, "older heartbeat (no pending gauge): listing unchanged, old status line");
   }
 
   console.log("\n5. runHeartbeat with a fake scheduler: interval, outage recovery, wiring:");

@@ -46,6 +46,7 @@ Files:
 | `shade_tree_heartbeat_attempts_total` | counter | `outcome` (accepted\|rejected\|egress-unhealthy\|transport-error) | `packages/node/bootnode/heartbeat.mjs` |
 | `shade_tree_heartbeat_last_success_timestamp_seconds` | gauge | none | `packages/node/bootnode/heartbeat.mjs` |
 | `shade_tree_heartbeat_egress_check_up` | gauge | none | `packages/node/bootnode/heartbeat.mjs` |
+| `shade_tree_heartbeat_elders_pending` | gauge | none | `packages/node/bootnode/heartbeat.mjs` (Elders that have not answered since the heartbeat started) |
 | `shade_tree_heartbeat_draining` | gauge | none | `packages/node/bootnode/heartbeat.mjs` (1 while the operator drain flag is announced) |
 | `shade_tree_alert_webhook_total` | counter | `result` (sent\|failed) | `packages/node/lib/alerts.mjs` (gateway + heartbeat, when a webhook is set) |
 | `shade_tree_registrar_payments_total` | counter | `protocol` (unknown\|x402\|mpp), `result` (challenged\|inserted\|replayed\|rejected\|failed), bounded `reason` on non-success outcomes | `packages/node/payments/registrar.mjs` |
