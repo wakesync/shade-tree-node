@@ -4,6 +4,23 @@ ShadeNet was formerly Shade Tree Grove; entries below keep the names they shippe
 
 ## Unreleased
 
+### JS client: a regression test that a node's refusal before the envelope is read reaches the caller
+
+- New `packages/node/client/dial-ack-handoff.selftest.mjs`: the real `socks` library against a
+  loopback fake proxy and node. A node that answers and closes before it reads an envelope
+  (`bad-envelope:envelope timeout`, `too-many-connections`), in the same TCP write as the proxy's
+  connect reply or after it, is read as that refusal (`gate refused: <reason>`) by `connect()`,
+  session init and ticket spend, not as an `ACK_EOF` or `ACK_CLOSED` transport error. An ok
+  acknowledgement with tunnel bytes in the connect-reply write still opens the tunnel with those
+  bytes. Three controls hold the socket after the dial and show the failure the test guards
+  against: one event-loop turn gives `ACK_EOF`, a hold until the close gives `ACK_CLOSED`, a held
+  ok gives `ACK_TIMEOUT`.
+- Test and source comments only, no behaviour change. The client already hands the dialed socket
+  to the acknowledgement reader with no await in between, and proves before it dials. Comments at
+  the three dial sites now say why that order matters: the `socks` library resumes the socket one
+  event-loop turn after the connect reply, so a client that held it (for example, to prove) would
+  lose the node's line.
+
 ### `shadenet init --dir <relative path>` writes a config that loads (#436)
 
 - `init` wrote the `--dir` value into `config.toml` as given, while the loader resolves relative
