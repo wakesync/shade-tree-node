@@ -124,6 +124,15 @@ docker run -d --name shadenet-node --restart unless-stopped \
 docker exec shadenet-node shadenet-node status   # "listed": Elders that accepted
 ```
 
+`listed` counts each Elder's answer as it arrives: `eldersAccepted` (its latest answer was an
+acceptance), `eldersPending` (it has not answered since the heartbeat started) and `eldersTotal`; an
+Elder in neither count refused, could not be reached, or was skipped because the egress check
+failed. During the first announce a slow Elder is
+pending, and `status` prints `1 of 2 Elder Trees accepted, 1 pending (the first announce is still
+in progress)`: wait for it. Once every Elder has answered and none accepted, it prints `no Elder
+Tree lists this node yet (0 of 2 accepted the last announce)`, and `docker logs` shows each Elder's
+answer on the `heartbeat rejected` lines.
+
 The hardening flags are the ones `examples/node/compose.yml` sets: no privilege escalation, no
 capabilities, a read-only root with `/tmp` in memory, a memory cap and bounded logs. The node needs
 none of what they take away. One bond backs every onion an operator signs; the key file is read
